@@ -1812,6 +1812,7 @@
           <div class="st spd"><span class="srl">Speed</span><b id="upSpeed">1.0×</b></div>
           <div class="st ext"><span class="srl" id="upExtraLab">Output</span><b id="upExtra">—</b></div>
           <div class="st dep" id="upDepRow" style="display:none"><span class="srl">Requires</span><b id="upDeposit">—</b></div>
+          <div id="conSec" style="display:none"></div>
           <div class="up-actions" id="upActionsStats" style="display:flex">
             <button class="ub main" id="upBuy">UPGRADE <span class="c" id="upCost">$90</span></button>
             <div class="up-actions-row">
@@ -2057,6 +2058,7 @@ const ITEMS={
   ironIngot:{name:'Iron Ingot',value:8,tier:1,col:'#c8ccd8',dark:'#6c7280'},
   carbon:   {name:'Carbon',    value:9,tier:1,col:'#3a3a46',dark:'#15151c'},
   sand:     {name:'Sand',      value:9,tier:1,col:'#d8c08a',dark:'#8a7448'},
+  compressedSand:{name:'Compressed Sand',value:6,tier:1,col:'#c9b177',dark:'#7c6844'},
   silverIngot:{name:'Silver Ingot',value:16,tier:1,col:'#d7dfe8',dark:'#7a8694'},
   goldIngot:{name:'Gold Ingot',value:22,tier:1,col:'#ffd45e',dark:'#a37c1c'},
   glass:    {name:'Glass',     value:16,tier:1,col:'#bfe6f5',dark:'#6d96ab'},
@@ -2175,7 +2177,7 @@ function fbm(x,y,oct){oct=oct||3;let sum=0,amp=0.5,freq=1;for(let i=0;i<oct;i++)
 //
 // 6 LAYER TYPES, each with 4*(typeIdx+1) sub-layers (4, 8, 12, 16, 20, 24 = 84 total).
 // Type 1 = Topsoil (4)    — coal, copper, iron
-// Type 2 = Clay     (8)    — tin, aluminum, quartz
+// Type 2 = Clay     (8)    — tin, aluminum, quartz (v41: quartz lives in Clay; sand strata sit directly on it)
 // Type 3 = Stone    (12)   — silver, nickel, gold       ← inserted between Clay and Deeprock
 // Type 4 = Deeprock (16)   — silver, nickel, gold, lithium
 // Type 5 = Bedrock  (20)   — lithium, titanium, tungsten
@@ -2185,7 +2187,7 @@ function fbm(x,y,oct){oct=oct||3;let sum=0,amp=0.5,freq=1;for(let i=0;i<oct;i++)
 // purple entirely — earthy browns, warm reds, neutral grays, fiery oranges.
 const LAYER_TYPES=[
   {n:'Topsoil',  base:[188,158,112], dark:[148,118,80],   ores:['coal','copperOre','ironOre'],                  count:4},
-  {n:'Clay',     base:[182,128,108], dark:[140,90,72],    ores:['tinOre','aluminumOre','quartz'],               count:8},
+  {n:'Clay',     base:[182,128,108], dark:[140,90,72],    ores:['tinOre','aluminumOre','quartz'],               count:8},  // v41: quartz in Clay is REAL — ORE_CHANCES.Clay.quartz drives excavator yields (user: "quartz can spawn on clay")
   {n:'Stone',    base:[140,140,140], dark:[92,92,92],     ores:['silverOre','nickelOre','goldOre'],             count:12},
   {n:'Deeprock', base:[78,78,82],    dark:[44,44,48],     ores:['silverOre','nickelOre','goldOre','lithium'],   count:16},
   {n:'Bedrock',  base:[52,52,56],    dark:[22,22,26],     ores:['lithium','titaniumOre','tungstenOre'],         count:20},
@@ -2207,6 +2209,10 @@ const LAYERS=[{n:'Surface',base:[140,180,95],ores:[]}];
     typeIdx++;
   }
 })();
+// v41 — first Clay sub-layer (Topsoil occupies depths 1-4). Sand strata sit
+// DIRECTLY on Clay (user spec: "it goes sand directly into clay"): digging a
+// sand tile jumps here, skipping the whole Topsoil band.
+const CLAY_START_DEPTH=5;
 // Stone color for ore tiles — neutral grey (matches the Stone layer's base).
 const STONE_COLOR=[150,150,150];
 // Resolve which type + sub-layer a depth belongs to. depth=0 → grass.
@@ -2229,9 +2235,16 @@ function layerInfoAt(depth){
 // types 0 and 1 so surveys still produce them.)
 const ORE_CHANCES={
   Topsoil:  {coal:.18, copperOre:.18, ironOre:.14},
-  Clay:     {tinOre:.10, aluminumOre:.08, quartz:.08, copperOre:.04, ironOre:.04},
-  Stone:    {silverOre:.10, nickelOre:.07, goldOre:.05, quartz:.05, tinOre:.03},
-  Deeprock: {silverOre:.08, nickelOre:.07, goldOre:.07, lithium:.05, quartz:.04},
+  // v41 — QUARTZ RULE refined (user: "it goes sand directly into clay and
+  // quartz can spawn on clay"): NO quartz in the dirt (Topsoil) or anything
+  // deeper than Clay — but quartz DOES spawn in Clay, the stratum sand sits
+  // directly on. Surface quartz still comes from sand-only vein rolls
+  // (rollNewOres → addPatch) and the sand → compressed sand → quartz chain;
+  // now the excavator can also strike quartz while digging Clay, including
+  // the clay right under desert and beach sand.
+  Clay:     {tinOre:.10, aluminumOre:.08, quartz:.06, copperOre:.04, ironOre:.04},
+  Stone:    {silverOre:.10, nickelOre:.07, goldOre:.05, tinOre:.03},
+  Deeprock: {silverOre:.08, nickelOre:.07, goldOre:.07, lithium:.05},
   Bedrock:  {lithium:.08, titaniumOre:.06, tungstenOre:.05, goldOre:.04, nickelOre:.03},
   Mantle:   {crystal:.10, uranium:.06, platinumOre:.05, lithium:.03, tungstenOre:.03}
 };
@@ -2341,13 +2354,21 @@ function blendedLayerColor(x,y,depth){
 function ttOf(x,y){
   // Water check FIRST — applies to in-grid AND off-grid tiles.
   if(isWaterAt(x,y))return 'water';
+  // v38 — sand riverbank beaches: undug surface tiles report as 'sand' so
+  // edges/corners treat them as their own terrain type. Dug tiles (depth>=2)
+  // fall through to their layer type — digging a beach removes the sand and
+  // reveals the strata underneath. The check is INLINED per branch, reusing
+  // lookups ttOf already did — no extra Map traffic on this hot path
+  // (drawTerrainEdges calls ttOf ~10k times per frame at user zoom).
   if(inB(x,y)){
+    if((G.grid[y][x].depth||1)<2&&isSandAt(x,y))return 'sand';
     const c=G.grid[y][x];
     return terrainTypeAt(x,y,c.depth||1);
   }
   // Off-grid: return terrain type for ANY stored cell (expansion patches
   // AND excavator-dug tiles), not just buildable ones.
   const oc=G._offGrid&&G._offGrid.get(offKey(x,y));
+  if((oc?(oc.depth||0)<2:true)&&isSandAt(x,y))return 'sand';
   if(oc&&(oc.depth||0)>=1)return terrainTypeAt(x,y,oc.depth||1);
   return 'grass';
 }
@@ -2357,7 +2378,12 @@ function paintTerrain(ctx,x,y,T,depth){
     paintWater(ctx,x,y,T,typeof G!=='undefined'&&G.time?G.time:0);
     return;
   }
-  const tt=terrainTypeAt(x,y,depth);
+  // v38 — SAND RIVERBANKS: an undug surface tile on a riverbank beach paints
+  // as sand. Same paint path as the layers (same vAt noise field, same W/E
+  // edge-sampled gradient, same cache) — only the base color differs, so a
+  // beach sits in the world exactly like every other terrain tile.
+  const sand=(depth<2)&&isSandAt(x,y);
+  const tt=sand?'sand':terrainTypeAt(x,y,depth);
   const key=x+','+y+','+depth+','+tt;
   let cached=_terrainCache.get(key);
   if(!cached){
@@ -2366,7 +2392,7 @@ function paintTerrain(ctx,x,y,T,depth){
     // Clay should have a clay-colored background, not a uniform stone gray.
     // The ore sprite (drawn separately by drawVeins) provides the visual
     // ore indicator on top of this layer-colored background.
-    let base=blendedLayerColor(x,y,depth);
+    let base=sand?SAND_BASE:blendedLayerColor(x,y,depth);
     // Add per-tile noise variation so adjacent same-depth tiles don't look
     // like flat identical blocks. Three octaves of noise at different scales
     // give coarse patches, fine speckling, and very fine grain.
@@ -2414,8 +2440,8 @@ function paintTerrain(ctx,x,y,T,depth){
     // 8% per depth step — that is why grass right outside the dirt read
     // as a lighter band. Depth shading only ever DARKENS deeper tiles.
     const dShade=neighborCount>0?Math.max(0,Math.min(0.25,(myDepth-neighborSum/neighborCount)*0.08)):0;
-    const baseW=blendedLayerColor(x,y+.5,depth);
-    const baseE=blendedLayerColor(x+1,y+.5,depth);
+    const baseW=sand?SAND_BASE:blendedLayerColor(x,y+.5,depth);
+    const baseE=sand?SAND_BASE:blendedLayerColor(x+1,y+.5,depth);
     let r=Math.max(0,Math.min(255,Math.round(baseW[0]*(1+vW-dShade))));
     let g=Math.max(0,Math.min(255,Math.round(baseW[1]*(1+vW-dShade))));
     let b=Math.max(0,Math.min(255,Math.round(baseW[2]*(1+vW-dShade))));
@@ -2463,6 +2489,8 @@ function paintTerrain(ctx,x,y,T,depth){
     const cnt={};for(const t of arr)cnt[t]=(cnt[t]||0)+1;
     const vals=Object.values(cnt);
     if(vals.length!==2||!vals.includes(3))return false;       // not convex
+    // v38 — seamless sand|grass corner: no rounding (see convexQuad).
+    if(cnt.sand&&cnt.grass)return false;
     const minType=arr.find(t=>cnt[t]===1);
     const myType={NW:nw,NE:ne,SW:sw,SE:se}[myQuad];
     return myType===minType;                                   // this tile is the minority
@@ -2488,6 +2516,14 @@ function paintTerrain(ctx,x,y,T,depth){
   function neighborColor(tx,ty){
     const c=cellAt(tx,ty);
     if(c&&c.water) return [92,156,172];            // water shallow (animated painter owns it)
+    // v38 — a sand tile's corner-gap fill must be SAND (with the same noise
+    // modulation its real fill uses), not its layer color.
+    if((c?(c.depth||0):0)<2&&isSandAt(tx,ty)){
+      const vv=1+(fbm(tx*.35,ty*.35,3)-.5)*.10
+             +(fbm(tx*1.8+100,ty*1.8+100,2)-.5)*.05
+             +(fbm(tx*4.2+50,ty*4.2+50,1)-.5)*.03;
+      return [SAND_BASE[0]*vv,SAND_BASE[1]*vv,SAND_BASE[2]*vv];
+    }
     let base;
     if(c&&c.terr!=='floor'&&ORES[c.terr]) base=blendedLayerColor(tx,ty,c.depth||1);
     else if(!c||!(c.depth>0)) base=[140,180,95];   // grass
@@ -2622,14 +2658,19 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
     deeprock:'#545458',    // dark grey (matches deeprock base)
     bedrock:'#343438',     // very dark grey (matches bedrock base)
     mantle:'#c4602a',      // dark orange (matches mantle base)
-    water:'#3a6a9a'        // shore line — sandy blue where water meets land
+    water:'#3a6a9a',      // shore line — sandy blue where water meets land
+    sand:'#e8d8ab'        // v39 — sand rim LIGHTER than the fill (user spec), drawn with the same stroke as every layer
   };
   // Priority order: index 0 = highest priority (shallowest), 5 = lowest (deepest)
   // Water is between grass and topsoil — a sandy shore color wins over dirt/stone
   // but the grass green still wins at the outer boundary.
-  const LAYER_PRIORITY=['grass','water','topsoil','clay','stone','deeprock','bedrock','mantle'];
+  const LAYER_PRIORITY=['grass','water','sand','topsoil','clay','stone','deeprock','mantle'];  // v38 — sand: shallowest deposit
   function edgeCol(a,b){
     if(a===b)return null;  // same type — no border
+    // v38 — SAND|GRASS is SEAMLESS: no border line where the beach meets the
+    // meadow. The two fills butt directly against each other exactly like
+    // same-type tiles — the color change alone carries the transition.
+    if((a==='sand'&&b==='grass')||(a==='grass'&&b==='sand'))return null;
     // Grass borders — green ALWAYS wins when any tile touches grass.
     // This is the highest priority border color.
     if(a==='grass'||b==='grass'){
@@ -2657,6 +2698,10 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
     const cnt={};for(const t of arr)cnt[t]=(cnt[t]||0)+1;
     const vals=Object.values(cnt);
     if(vals.length!==2||!vals.includes(3))return null;
+    // v38 — a 3+1 corner whose two types are the seamless pair (sand|grass) is
+    // NOT a corner: no arc, no trim — the square fills meet exactly, so the
+    // seam reads as one continuous surface with no notch.
+    if(cnt.sand&&cnt.grass)return null;
     const minType=arr.find(t=>cnt[t]===1);
     if(nw===minType)return 'NW';
     if(ne===minType)return 'NE';
@@ -2792,40 +2837,33 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
     else if(e.edge==='S'){ax=e.x0;ay=e.y1;bx2=e.x1;by2=e.y1;}
     else{ax=e.x0;ay=e.py;bx2=e.x1;by2=e.py;}
     if(Math.hypot(bx2-ax,by2-ay)<=0)continue;
-    // v35 — the green rim rides ENTIRELY on the non-grass side of the
-    // boundary. The v34 centered stroke painted +-lipW/2, so a 0.06T band
-    // of border green landed ON the grass tiles — every grass tile touching
-    // the border read as a lighter strip against the field. Shifting the
-    // path lipW/2 toward the dirt/water side keeps the exact same coverage
-    // guarantee (the stroke's inner edge sits exactly on the tile boundary,
-    // so the fill can never poke past it) while grass pixels stay untouched.
-    const lipW=T*.12, hw=lipW/2;
+    // v37 — THE GRASS BORDER DRAWS EXACTLY LIKE EVERY OTHER BORDER (user:
+    // "make the grass border exactly like you do for all the other borders").
+    // Same width as every shore/layer border (lineW), path CENTERED on the
+    // tile boundary, corner arcs at the same radius r the tile fill rounds
+    // with — one crisp green stroke, and the dirt fill stays visible right
+    // up to the line when zoomed in (no fat one-sided band swallowing the
+    // island's edge). The stroke's outer half covers the fill's antialiased
+    // edge, so the dirt can never poke past the line.
+    const lipW=lineW;
     const isV=e.edge==='E'||e.edge==='W';
     const jx=e.edge==='E'?e.x1:e.px;
-    const dx=-e.gx*hw, dy=-e.gy*hw;   // shift toward the non-grass side
+    const dx=0, dy=0;   // centered on the boundary — like every other border
     const p2=new Path2D();
     if(isV&&e.topQ){
-      // Corner arc, offset WITH the boundary. The original arc hugs the
-      // minority tile's rounded corner (center = lattice corner + r on the
-      // minority diagonal). Offsetting toward the majority side by hw keeps
-      // the SAME center: radius r-hw when the minority tile is the non-grass
-      // one (arc shrinks inward), r+hw when the minority tile is grass (arc
-      // grows outward). Tangent points shift with the spans; along-axis
-      // coordinates are unchanged, so consecutive edges still meet exactly.
+      // Corner arc — the SAME arcTo geometry the tile fill rounds with
+      // (center = lattice corner + r on the minority diagonal, radius r),
+      // so the stroke hugs the fill edge exactly: concentric by construction.
       const sx=e.topQ==='SW'?-1:1;    // minority-diagonal x sign (top arcs)
-      const gmin=e.gx===sx;           // minority tile sits on the grass side
-      const cyy=e.py+(gmin?-hw:hw);
-      p2.moveTo(jx+sx*e.r,cyy);
-      p2.arcTo(jx+dx,cyy,jx+dx,e.py+e.r,e.r+(gmin?hw:-hw));
+      p2.moveTo(jx+sx*e.r,e.py);
+      p2.arcTo(jx,e.py,jx,e.py+e.r,e.r);
     }else{
-      p2.moveTo(isV?ax+dx:ax, isV?ay:ay+dy);
+      p2.moveTo(ax, ay);
     }
-    p2.lineTo(isV?bx2+dx:bx2, isV?by2:by2+dy);
+    p2.lineTo(bx2, by2);
     if(isV&&e.botQ){
       const sx=e.botQ==='NW'?-1:1;    // minority-diagonal x sign (bottom arcs)
-      const gmin=e.gx===sx;
-      const cyy=e.py+e.T+(gmin?hw:-hw);
-      p2.arcTo(jx+dx,cyy,jx+sx*e.r,cyy,e.r+(gmin?hw:-hw));
+      p2.arcTo(jx,e.py+e.T,jx+sx*e.r,e.py+e.T,e.r);
     }
     ctx.lineCap='round';
     ctx.strokeStyle=e.col;ctx.lineWidth=lipW;
@@ -2837,11 +2875,12 @@ function purifyOres(){let n=0;for(let y=0;y<G.N;y++)for(let x=0;x<G.N;x++){const
 
 // ---------- single-input processors ----------
 const PROC={
-  smelter:{copperOre:'copperIngot',ironOre:'ironIngot',coal:'carbon',silverOre:'silverIngot',goldOre:'goldIngot',titaniumOre:'titaniumIngot',tinOre:'tinIngot',aluminumOre:'aluminumIngot',nickelOre:'nickelIngot',tungstenOre:'tungstenIngot',platinumOre:'platinumIngot'},
+  smelter:{copperOre:'copperIngot',ironOre:'ironIngot',coal:'carbon',silverOre:'silverIngot',goldOre:'goldIngot',titaniumOre:'titaniumIngot',tinOre:'tinIngot',aluminumOre:'aluminumIngot',nickelOre:'nickelIngot',tungstenOre:'tungstenIngot',platinumOre:'platinumIngot',compressedSand:'quartz'},
   crusher:{quartz:'sand',crystal:'crystalDust',stone:'sand'},
   refinery:{sand:'glass',lithium:'lithiumGel',uranium:'enrichedUranium'},
-  press:{copperIngot:'copperPlate',ironIngot:'ironPlate',silverIngot:'silverPlate',goldIngot:'goldPlate',titaniumIngot:'titaniumPlate',steel:'steelPlate',aluminumIngot:'aluminumPlate'},
+  press:{copperIngot:'copperPlate',ironIngot:'ironPlate',silverIngot:'silverPlate',goldIngot:'goldPlate',titaniumIngot:'titaniumPlate',steel:'steelPlate',aluminumIngot:'aluminumPlate',sand:'compressedSand'},
   wiremill:{copperIngot:'copperWire',silverIngot:'silverWire',goldIngot:'goldWire'},
+  furnace:{copperOre:'copperIngot',ironOre:'ironIngot',coal:'carbon',silverOre:'silverIngot',goldOre:'goldIngot',titaniumOre:'titaniumIngot',tinOre:'tinIngot',aluminumOre:'aluminumIngot',nickelOre:'nickelIngot',tungstenOre:'tungstenIngot',platinumOre:'platinumIngot',compressedSand:'quartz'},
   quantumForge:{copperIngot:'quantumAlloy',ironIngot:'quantumAlloy',silverIngot:'quantumAlloy',goldIngot:'quantumAlloy',titaniumIngot:'quantumAlloy',steel:'quantumAlloy',aluminumIngot:'quantumAlloy',nickelIngot:'quantumAlloy',tungstenIngot:'quantumAlloy',platinumIngot:'quantumAlloy'}
 };
 
@@ -2915,13 +2954,13 @@ const TOOLS={
   splitter: {name:'Splitter',  base:120, esc:1.30, desc:'Drag over belts — splits flow across all connected outputs', tech:'splitter'},
   bridge:   {name:'Bridge',    base:80,  esc:1.30, desc:'Place a belt on top of a belt — both keep their own direction', tech:'bridge'},
   filter:   {name:'Filter',    base:100, esc:1.30, desc:'Drag over belts — only the selected item passes through', tech:'a2_filter'},
-  smelter:  {name:'Smelter',   base:150, esc:1.35, desc:'Metal ore → ingot · coal → carbon', tech:'smelter'},
+  smelter:  {name:'Smelter',   base:150, esc:1.35, desc:'Ore → ingot · coal → carbon · compressed sand → quartz · upgradeable → Furnace', tech:'smelter'},
   crusher:  {name:'Crusher',   base:250, esc:1.35, desc:'Quartz → sand · crystal → dust', tech:'crusher'},
   refinery: {name:'Refinery',  base:800, esc:1.35, desc:'Sand → glass · lithium · uranium', tech:'refinery'},
-  press:    {name:'Press',     base:400, esc:1.35, desc:'Ingot → plate', tech:'press'},
+  press:    {name:'Press',     base:400, esc:1.35, desc:'Ingot → plate · sand → compressed sand', tech:'press'},
   wiremill: {name:'Wire Mill', base:500, esc:1.35, desc:'Ingot → wire', tech:'wiremill'},
-  assembler:{name:'Assembler', base:1500,esc:1.40, desc:'Crafts components & products', tech:'assembler'},
-  fabricator:{name:'Fabricator',base:5000,esc:1.45,desc:'Crafts flagship goods', tech:'fabricator'},
+  assembler:{name:'Assembler', base:1500,esc:1.40, desc:'Crafts components & products · upgradeable → Fabricator', tech:'assembler'},
+  fabricator:{name:'Fabricator',base:5000,esc:1.45,desc:'Crafts flagship goods · upgradeable → Manufacturer', tech:'fabricator'},
   foreman:  {name:'Foreman Office', base:2200, esc:1.5, w:2,h:2, boost:{kind:'speed',mults:[0.25,0.35,0.45,0.55,0.70]}, desc:'2×2 · +25%→+70% speed aura (8-dir) · $1/min×MK upkeep', tech:'foreman'},
   quantumForge:{name:'Quantum Forge',base:80000,esc:1.5, desc:'Any ingot → Quantum Alloy', tech:'a2_quantumForge'},
   dysonFoundry:{name:'Dyson Foundry',base:200000,esc:1.5, desc:'Crafts stellar-scale Dyson components', tech:'a2_dysonFoundry'},
@@ -2930,9 +2969,12 @@ const TOOLS={
   del:      {name:'Scrap',      base:0,   esc:1,    desc:'Remove · 50% back'},
   trader:   {name:"Trader's Post",base:800,esc:1.35,desc:"Auto-buys a selected item with money — like a drill for cash",tech:'trader'},
   extender: {name:'Extender',   base:80,  esc:1.30, desc:'Elongates a machine — adds an extra belt port. Point it at the machine (or another extender) when placing.', tech:'extender'},
+  builder:  {name:'Builder',    base:250, esc:1.30, desc:'Construction crate — click a machine under upgrade. It falls on, latches in and feeds ONE ingredient. First attached Extender = +1 ingredient slot.', tech:'smelter'},
+  furnace:  {name:'Furnace',    base:4000, esc:1.45,desc:'Alloy furnace — smelts ores AND combines two inputs into advanced alloys. Built by upgrading a Smelter.', tech:'metallurgy'},
+  manufacturer:{name:'Manufacturer',base:20000,esc:1.5,desc:'Mass-produces flagship goods — 2 per craft. Built by upgrading a Fabricator.', tech:'manufacturer'},
   excavator:{name:'Excavator',  base:500, esc:1.5,  desc:'Burns coal to mine the block underneath — digs down through geological layers. Higher MK = faster cycle. Radius tech mines a wider area. 80% refund on scrap.', tech:'excavator'}
 };
-const TOOL_ORDER=['drill','belt','splitter','bridge','filter','extender','excavator','smelter','crusher','refinery','press','wiremill','assembler','fabricator','foreman','workshop','seller','trader','quantumForge','dysonFoundry','del'];
+const TOOL_ORDER=['drill','belt','splitter','bridge','filter','extender','builder','excavator','smelter','crusher','refinery','press','wiremill','assembler','foreman','workshop','seller','trader','quantumForge','dysonFoundry','del'];   // v39 — store sells BASE machines only: fabricator removed (constructed via Assembler upgrade), Builder added
 // which tools are area boosters (no I/O, just an adjacency aura)
 function isBooster(t){return!!(TOOLS[t]&&TOOLS[t].boost)}
 function footprint(t,dir){const d=TOOLS[t]||{};const bw=d.w||1,bh=d.h||1;const rotated=bw!==bh&&dir&&(dir==='E'||dir==='W');return rotated?{w:bh,h:bw}:{w:bw,h:bh}}
@@ -2940,10 +2982,10 @@ const UP={drill:{base:90,esc:2.1},belt:{base:20,esc:1.6},smelter:{base:150,esc:1
   crusher:{base:200,esc:1.7},refinery:{base:400,esc:1.7},press:{base:300,esc:1.7},
   wiremill:{base:350,esc:1.7},assembler:{base:800,esc:1.7},fabricator:{base:2000,esc:1.7},
   splitter:{base:60,esc:1.6},bridge:{base:80,esc:1.6},filter:{base:60,esc:1.6},
-  foreman:{base:3000,esc:1.8},workshop:{base:1000,esc:1.7},seller:{base:30,esc:1.5},trader:{base:200,esc:1.7},extender:{base:60,esc:1.5},quantumForge:{base:80000,esc:1.5},dysonFoundry:{base:200000,esc:1.5},excavator:{base:200,esc:1.7}};
+  foreman:{base:3000,esc:1.8},workshop:{base:1000,esc:1.7},seller:{base:30,esc:1.5},trader:{base:200,esc:1.7},extender:{base:60,esc:1.5},quantumForge:{base:80000,esc:1.5},dysonFoundry:{base:200000,esc:1.5},excavator:{base:200,esc:1.7},furnace:{base:1500,esc:1.7},manufacturer:{base:5000,esc:1.7}};
 const spdFn=l=>1+0.5*(l-1);   // MK1=1.0×, MK2=1.5×, MK3=2.0×, MK4=2.5×, MK5=3.0×
 const MAX_LVL=5;
-const INT={drill:3200,quantumForge:2000,dysonFoundry:5000,smelter:2200,crusher:2000,refinery:2600,press:2200,wiremill:2200,assembler:3000,fabricator:4200,trader:2200};
+const INT={drill:3200,quantumForge:2000,dysonFoundry:5000,smelter:2200,crusher:2000,refinery:2600,press:2200,wiremill:2200,assembler:3000,fabricator:4200,trader:2200,furnace:1800,manufacturer:4200};
 const EXCAVATOR_TIMES={1:90000,2:90000,3:90000,4:90000,5:90000};   // (legacy — unused by new coal-based mechanic, kept for save compat)
 // ============================================================
 //  MODULES — per-machine upgrade slots with processing pipelines
@@ -3227,7 +3269,7 @@ const TECHS=[
   {id:'expand2',  name:'Floor Expansion II',cost:75000, req:'expand1', col:2,row:5,kind:'world',desc:'Expand to 11×11 — more off-grid land claimed, more ore beyond.',apply:()=>expandFloor()},
   {id:'expand3',  name:'Floor Expansion III',cost:300000,req:'expand2',col:3,row:5,kind:'world',desc:'Expand to 13×13 — the factory reaches its full extent, claiming all surrounding land.',apply:()=>expandFloor()},
   {id:'offGrid',  name:'Off-Grid Construction',cost:10000000,req:'expand3',col:4,row:5,kind:'world',desc:'Advanced structural tech — build machines and belts on the void beyond the factory floor. No size limits. The factory can now grow without bound.',apply:()=>{G.mods.offGrid=true;hint('Off-Grid Construction unlocked! Build anywhere — even outside the grid.')}},
-  {id:'excavator', name:'Excavator', cost:5000, req:'drill', col:1,row:13,kind:'machine',desc:'Unlock the Excavator — burns 1 coal/sec to build progress. Every 90 coal consumed, it mines the block underneath, digging down through 6 geological layer types (84 sub-layers total). If no coal arrives for 3 seconds, progress drains at 1/sec — keep coal flowing! Each block has an RNG chance to strike ore (most yield plain rock; lucky blocks strike a vein). Type 1 Topsoil (4): coal/copper/iron. Type 2 Clay (8): tin/aluminum/quartz. Type 3 Stone (12): silver/nickel/gold. Type 4 Deeprock (16): silver/nickel/gold/lithium. Type 5 Bedrock (20): lithium/titanium/tungsten. Type 6 Mantle (24): crystal/uranium/platinum. 80% refund on scrap.'},
+  {id:'excavator', name:'Excavator', cost:5000, req:'drill', col:1,row:13,kind:'machine',desc:'Unlock the Excavator — burns 1 coal/sec to build progress. Every 90 coal consumed, it mines the block underneath, digging down through 6 geological layer types (84 sub-layers total). If no coal arrives for 3 seconds, progress drains at 1/sec — keep coal flowing! Each block has an RNG chance to strike ore (most yield plain rock; lucky blocks strike a vein). Type 1 Topsoil (4): coal/copper/iron. Type 2 Clay (8): tin/aluminum/quartz. Type 3 Stone (12): silver/nickel/gold. Type 4 Deeprock (16): silver/nickel/gold/lithium. Type 5 Bedrock (20): lithium/titanium/tungsten. Type 6 Mantle (24): crystal/uranium/platinum. Quartz spawns on sand (riverbank beaches and desert dunes) and in Clay strata — never in the dirt. 80% refund on scrap.'},
   {id:'excavatorRadius1', name:'Wide Bore', cost:80000, req:'excavator', col:2,row:13,kind:'boost',desc:'Unlock 3×3 bore mode for the Excavator. Select the Excavator and use the radius picker to switch between 1×1 and 3×3 — your choice, not mandatory.',apply:()=>{G.mods.excavatorRadiusMax=1}},
   {id:'excavatorRadius2', name:'Cascade Bore', cost:600000, req:'excavatorRadius1', col:3,row:13,kind:'boost',desc:'Unlock 5×5 bore mode. Use the radius picker on the Excavator to choose 1×1, 3×3, or 5×5.',apply:()=>{G.mods.excavatorRadiusMax=2}},
   {id:'excavatorGem', name:'Vein Extraction', cost:200000, req:'excavatorRadius1', col:4,row:13,kind:'boost',desc:'Unlock the Vein Gem — a special module for Excavators that gives +5% ore yield per geological layer excavated. Stacks with multiple gems.',apply:()=>{G.mods.excavatorGemUnlocked=true;hint('Vein Gem unlocked! Install it on Excavators from the Modules tab.')}},
@@ -3244,7 +3286,7 @@ const TECHS=[
 
   // ===== SMELTER BRANCH (from start) =====
   {id:'smelter',  name:'Smelting',          cost:300,   req:'start',   col:1,row:6,kind:'machine',desc:'Unlock the Smelter — metal ores become ingots, coal becomes carbon.'},
-  {id:'metallurgy', name:'Metallurgy',       cost:18000,  req:'smelter',    col:2,row:10,kind:'machine',desc:'Teach the Smelter to ALLOY: combine two inputs into Steel, Bronze, Brass, Electrum, Cupronickel or Tool Steel.'},
+  {id:'metallurgy', name:'Metallurgy',       cost:18000,  req:'smelter',    col:2,row:10,kind:'machine',desc:'Unlock the FURNACE UPGRADE — attach Builders to a Smelter to construct a Furnace that ALLOYS two inputs into Steel, Bronze, Brass, Electrum, Cupronickel or Tool Steel.'},
 
   // ===== DRILL BRANCH (drill is its own tech node — separate root in the tree) =====
   {id:'drill',      name:'Drilling',         cost:0,     req:null,         col:0,row:11,kind:'machine',desc:'Your Drill is the heart of the operation.'},
@@ -3296,7 +3338,8 @@ const TECHS=[
   {id:'solarArr', name:'Solar Arrays',      cost:180000,req:'solar',     col:7,row:29,kind:'recipe',desc:'Flagship: Solar Array = 2 solar panels + alloy casing.'},
   {id:'lasers',   name:'Laser Optics',      cost:150000,req:'crystalOptics',col:7,row:30,kind:'recipe',desc:'Recipe: Laser = crystal lens + adv. circuit + titanium plate.'},
   {id:'processors',name:'Processors',       cost:75000, req:'advCirc',   col:7,row:31,kind:'recipe',desc:'Recipe: Processor = 2 circuits + gold plate + electrum.'},
-  {id:'fabricator',name:'Fabrication',      cost:100000,req:'motors',    col:6,row:34,kind:'machine',desc:'Unlock the FABRICATOR — the only machine that crafts flagship goods. Includes recipe: Computer.'},
+  {id:'fabricator',name:'Fabrication',      cost:100000,req:'motors',    col:6,row:34,kind:'machine',desc:'Unlock ASSEMBLER → FABRICATOR construction — attach Builders to an Assembler to build a Fabricator (crafts flagship goods). Includes recipe: Computer.'},
+  {id:'manufacturer',name:'Manufacturing',  cost:400000,req:'fabricator',col:7,row:36,kind:'machine',desc:'Unlock FABRICATOR → MANUFACTURER construction — attach Builders to a Fabricator to build a Manufacturer that mass-produces flagship goods (2 per craft).'},
   {id:'drones',   name:'Drones',            cost:200000,req:'fabricator',col:7,row:34,kind:'recipe',desc:'Flagship: Drone = motor + processor + battery + alloy casing.'},
   {id:'powerPlants',name:'Power Plants',    cost:250000,req:'fabricator',col:7,row:35,kind:'recipe',desc:'Flagship: Power Plant = reactor core + motor + titanium plate.'},
   {id:'nuclearFuel', name:'Nuclear Fuel',   cost:60000, req:'refinery',   col:5,row:36,kind:'recipe',desc:'Recipe: Fuel Rod = enriched uranium + titanium plate. Nuclear fuel for reactors and launch systems.'},
@@ -3692,7 +3735,7 @@ function boostAt(x,y){
   }
   return b;
 }
-const FAM_SPD={filter:null,smelter:'smeltSpd',crusher:'crushSpd',refinery:'refineSpd',press:'pressSpd',wiremill:'wireSpd',assembler:'asmSpd',fabricator:'asmSpd',drill:'drillSpd',quantumForge:'qforgeSpd',dysonFoundry:'dysonSpd',trader:'traderSpd',excavator:null};
+const FAM_SPD={filter:null,smelter:'smeltSpd',crusher:'crushSpd',refinery:'refineSpd',press:'pressSpd',wiremill:'wireSpd',assembler:'asmSpd',fabricator:'asmSpd',manufacturer:'asmSpd',furnace:'smeltSpd',drill:'drillSpd',quantumForge:'qforgeSpd',dysonFoundry:'dysonSpd',trader:'traderSpd',excavator:null};
 // spdOf now incorporates MODULE speed bonuses. Each Speed module on the
 // machine adds +50% speed ADDITIVELY (1.5x / 2.0x / 2.5x for 1/2/3 gems).
 // Previously this was multiplicative (1.5^N) which made Speed strictly dominant.
@@ -4371,6 +4414,16 @@ function sandF(g){
   OL(g,'#8a7448');g.stroke();
   g.fillStyle='rgba(255,255,255,.8)';
   for(const[x,y]of[[30,38],[41,31],[36,46],[46,43]]){g.beginPath();g.arc(x,y,1.6,0,7);g.fill()}
+}
+function compressedSandF(g){
+  // v38 — a pressed brick of sand: flat block, compressed strata lines, a few
+  // sparkle grains. Same fill+outline+white-accent family as sandF/plateF.
+  g.fillStyle='#c9b177';rr(g,15,20,42,32,8);g.fill();
+  OL(g,'#7c6844');g.stroke();
+  g.strokeStyle='rgba(255,255,255,.55)';g.lineWidth=2.4;g.lineCap='round';
+  g.beginPath();g.moveTo(21,31);g.lineTo(51,31);g.moveTo(21,41);g.lineTo(51,41);g.stroke();
+  g.fillStyle='rgba(255,255,255,.8)';
+  for(const[x,y]of[[27,25],[45,26],[36,47]]){g.beginPath();g.arc(x,y,1.5,0,7);g.fill()}
 }
 function glassF(g){
   g.fillStyle='#cfeaf8';
@@ -5487,7 +5540,7 @@ function buildItemSprites(){
     platinumIngot:spr(g=>ingotF(g,I.platinumIngot.col,I.platinumIngot.dark)),
     aluminumPlate:spr(g=>plateF(g,I.aluminumPlate.col,I.aluminumPlate.dark)),
     carbon:spr(g=>hexF(g,'#4a4a56','#23232c',false)),
-    sand:spr(sandF), glass:spr(glassF), lithiumGel:spr(gelF),
+    sand:spr(sandF), compressedSand:spr(compressedSandF), glass:spr(glassF), lithiumGel:spr(gelF),
     enrichedUranium:spr(g=>hexF(g,'#9ade6a','#4a7a2a',true)),
     steel:spr(g=>ingotF(g,I.steel.col,I.steel.dark)),
     brass:spr(g=>ingotF(g,I.brass.col,I.brass.dark)),
@@ -5638,12 +5691,21 @@ function blankCell(){return{terr:'floor',v:Math.floor(Math.random()*5),m:null,q:
 function addPatch(key,size,minX,minY,maxX,maxY){
   let guard=400,x,y;
   do{x=Math.floor(rnd(minX,maxX+1));y=Math.floor(rnd(minY,maxY+1))}
-  while((!inB(x,y)||G.grid[y][x].terr!=='floor'||G.grid[y][x].m||isWaterAt(x,y))&&guard-->0);
+  while((!inB(x,y)||G.grid[y][x].terr!=='floor'||G.grid[y][x].m||isWaterAt(x,y)
+    // v40 — the START tile must satisfy the beach rule too: quartz starts on
+    // SAND, every other ore starts on non-sand. Without this the single
+    // random start pick usually missed the (rare) beach tiles and the whole
+    // vein silently failed to spawn.
+    ||(key==='quartz'?!isSandAt(x,y):isSandAt(x,y)))&&guard-->0);
   if(guard<=0)return false;
   // organic blob growth: keep a frontier of candidate cells, expand outward.
   // Skip water tiles so ore veins don't overlap rivers.
   const free=(cx,cy)=>inB(cx,cy)&&G.grid[cy][cx].terr==='floor'&&!G.grid[cy][cx].m
     &&!isWaterAt(cx,cy)
+    // v39/v40 — QUARTZ IS THE BEACH ORE (user: quartz spawns on beaches, NOT
+    // in the dirt): quartz veins REQUIRE a sand riverbank, and every other
+    // ore skips beach tiles entirely.
+    &&(key==='quartz'?isSandAt(cx,cy):!isSandAt(cx,cy))
     &&cx>=minX&&cx<=maxX&&cy>=minY&&cy<=maxY;
   const set=(cx,cy)=>{G.grid[cy][cx].terr=key;G.grid[cy][cx].v=Math.floor(Math.random()*3);G.grid[cy][cx].q=rollQ()};
   if(!free(x,y))return false;
@@ -5721,6 +5783,7 @@ function genTerrain(){
   _waterCache.clear();            // clear water cache — seed is about to change
   _wFast.clear();                 // v35c — far-zoom water paints depend on the seed too
   _wDens.clear();                 // v36 — smooth-depth densities are seed-dependent too
+  _sandCache.clear();             // v38 — sand beaches are seed-dependent too
   G.waterSeed=Math.random();      // new rivers each game
   G.grid=[];
   for(let y=0;y<G.N;y++){G.grid[y]=[];for(let x=0;x<G.N;x++)G.grid[y][x]=blankCell()}
@@ -5810,6 +5873,90 @@ function isWaterAt(x,y){
     }
   _waterCache.set(key,result);
   return result;
+}
+// v38 SAND BEACHES + v41 DESERTS ==========================================
+// Sand is a pure function of (x,y)+G.waterSeed, exactly like water: no
+// storage, no generation step, infinite in all directions. A land tile is
+// sand when EITHER holds:
+//   1. BEACH (v38): it touches water (8-neighbor) AND a low-frequency mask
+//      passes — beaches come in long patches covering roughly 30-50% of the
+//      river edge, never the full length; or
+//   2. DESERT (v41): a very-low-frequency biome mask passes — wide dune
+//      fields far beyond the riverbanks (see isDesertAt below).
+// Sand only SHOWS on undug surface tiles (in-grid topsoil depth 1, off-grid
+// grass depth 0, off-grid expansion dirt depth 1). Digging it (depth>=2)
+// reveals the strata underneath — the sand is gone for good. v41: sand
+// strata sit DIRECTLY on Clay, skipping the Topsoil band (see
+// processExcavator + CLAY_START_DEPTH).
+const SAND_BASE=[218,196,146];      // warm beach tan (flat; sits with the layer palette)
+const SAND_THR=0.54;                // mask threshold — calibrated: bank coverage ~40% (30-50% spec)
+const _sandCache=new Map();
+function _sandMask(x,y){
+  // Same seed shifts as isWaterAt; independent +offsets so the mask is
+  // uncorrelated with the river fields (beaches don't align with river noise).
+  const seed=G.waterSeed||0;
+  const sx=x+seed*9176, sy=y+seed*3141;
+  return fbm(sx*0.15+77.7, sy*0.15+177.7, 2)/0.75;     // [0,1]; features ~7 tiles (v38 calib)
+}
+// v41 — DESERTS ===========================================================
+// Big biome-level sand regions: the sand economy's mid/late-game home.
+// Same pure-function contract as the beach rule — seed-shifted noise, no
+// storage, infinite in all directions. One very-low-frequency field
+// (features ~45 tiles) carves a handful of wide dune fields out of the
+// meadow; inside one, every land tile is sand whether or not it touches
+// water. Rivers still cut through (isDesertAt is water-aware), so a desert
+// river reads as a lush sandy wash, not a grass sliver.
+// The STARTER MEADOW is protected: the initial 7×7 grid plus a margin stays
+// grass so the guaranteed copper/iron/coal starter veins always have
+// non-sand tiles to spawn on (addPatch skips sand for every ore but quartz).
+// The handoff from meadow to desert is a smooth 12-tile threshold ramp, not
+// a hard rectangle, so dune fields fade in naturally at their edges.
+const DESERT_THR=0.65;                // calibrated: deserts ≈14-18% of open land
+function _desertMask(x,y){
+  // Independent offsets from the beach/river fields — deserts don't align
+  // with rivers or beach patches. Same [0,1] normalization as _sandMask.
+  const seed=G.waterSeed||0;
+  const sx=x+seed*4242, sy=y+seed*8481;
+  return fbm(sx*0.022+911.1, sy*0.022+313.1, 2)/0.75;   // features ~45 tiles
+}
+function isDesertAt(x,y){
+  if(isWaterAt(x,y))return false;      // rivers are never desert
+  const m=_desertMask(x,y);
+  if(m<=DESERT_THR)return false;
+  // starter-meadow protection: core (grid 0..6 + margin) never desert; a
+  // 12-tile ring ramps the threshold up so the transition is smooth
+  const dz=Math.max(Math.abs(x-3),Math.abs(y-3));
+  if(dz<=10)return false;
+  if(dz<22)return m>DESERT_THR+(1-(dz-10)/12)*0.25;
+  return true;
+}
+function isSandAt(x,y){
+  // v38b — NUMERIC key (no per-call string allocation): isSandAt is called
+  // from ttOf/paint for every visible tile every frame; string keys cost
+  // ~2ms/frame at user zoom. Bijective for x,y in [-8192, 8191].
+  const key=(x+8192)*16384+(y+8192);
+  const cached=_sandCache.get(key);
+  if(cached!==undefined)return cached;
+  let res=false;
+  if(!isWaterAt(x,y)){
+    // bank test — 8-neighbor water adjacency (diagonal banks count too)
+    let bank=false;
+    for(let dy=-1;dy<=1&&!bank;dy++)for(let dx=-1;dx<=1;dx++){
+      if(!dx&&!dy)continue;
+      if(isWaterAt(x+dx,y+dy)){bank=true;break}
+    }
+    // v41 — DESERTS: inside a desert biome every land tile is sand (banks
+    // included — no grass slivers where a desert meets a river). Outside
+    // deserts, only riverbank beach patches are sand, exactly as in v38.
+    if(isDesertAt(x,y))res=true;
+    else if(bank)res=_sandMask(x,y)>SAND_THR;
+  }
+  if(_sandCache.size>30000){
+    const ev=Math.floor(_sandCache.size*.25);
+    let i=0;for(const kk of _sandCache.keys()){_sandCache.delete(kk);if(++i>=ev)break}
+  }
+  _sandCache.set(key,res);
+  return res;
 }
 // v36 — SMOOTH WATER DEPTH FIELD. The water base color used to quantize per
 // tile (depth = integer 8-neighbor water count / 8) with one flat fill per
@@ -6182,11 +6329,16 @@ function expandFloor(){
     const threshold=0.35+(d/maxR)*0.2;  // harder to place near edges
     if(n>threshold||d<1.5){
       const k=oreAt(tx,ty);
+      // v41 — SAND RULE for off-grid deposits (same rule as in-grid veins):
+      // no ore terrain on sand except quartz. Claiming desert land yields
+      // buildable ground + the sand itself (drills extract it), not surface
+      // ore veins. Pre-v41 claimed patches keep what they already have.
+      const kk=(k&&k!=='quartz'&&isSandAt(tx,ty))?null:k;
       const c=offCellCreate(tx,ty);
       c.depth=1; c.buildable=true;
-      if(k){
-        c.terr=k; c.q=rollQ();
-        foundOres.add(k);
+      if(kk){
+        c.terr=kk; c.q=rollQ();
+        foundOres.add(kk);
       }else{
         // Dirt — buildable, but no ore. Drills can't go here; other machines can.
         // This is the "dirt" the player can place stuff on via expansion upgrades.
@@ -6372,6 +6524,8 @@ function receiverAt(x,y,d,type){
   // Drills, foreman, workshop, megaDrill never accept items from belts/splitters
   if(nm.type==='drill'||nm.type==='megaDrill'||nm.type==='foreman'||nm.type==='workshop')return false;
   if(nm.type==='excavator')return type==null?true:type==='coal';
+  // v39 — machine under construction still receives (its Builder ingredients)
+  if(nm.construction)return type==null?true:(type in nm.construction.need)&&constructionCovers(nm,nx,ny,type);
   if(PROC[nm.type])return type==null?true:!!PROC[nm.type][type];
   if(isAsm(nm))return type==null?true:RECIPES[nm.recipe]&&RECIPES[nm.recipe][type];
   return false;
@@ -6413,9 +6567,9 @@ function neighborFeedsUs(nm,d){
 // Note: the output gem no longer inflates qCap (it now correctly doubles production
 // via pushProducedItems instead).
 function qCap(m_or_type){let base=QCAP+(G.mods.qcap||0);let m=null;let mtype=null;if(typeof m_or_type==='string'){mtype=m_or_type}else if(m_or_type&&m_or_type.type){m=m_or_type;mtype=m.type}if(mtype){const batch=(_batchOfKey(mtype))||1;const cap=(_capOfKey(mtype))||0;const modCap=m?countModules(m,'capacity')*3:0;return base+batch-1+cap+modCap}return base}
-function _batchOfKey(mtype){const bk={smelter:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch',drill:'drillBatch',assembler:'asmBatch',fabricator:'asmBatch',dysonFoundry:'dysonBatch',trader:'traderBatch',quantumForge:'quantumForgeBatch'}[mtype];return bk&&G.mods[bk]}
-function _capOfKey(mtype){const ck={smelter:'smeltCap',crusher:'crushCap',refinery:'refineCap',wiremill:'wireCap',press:'pressCap',drill:'drillCap',assembler:'asmCap',trader:'traderCap',quantumForge:'qforgeCap',dysonFoundry:'dysonCap'}[mtype];return ck&&G.mods[ck]}
-function isAsm(m){return m.type==='assembler'||m.type==='fabricator'||m.type==='dysonFoundry'}
+function _batchOfKey(mtype){const bk={smelter:'smeltBatch',furnace:'smeltBatch',manufacturer:'asmBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch',drill:'drillBatch',assembler:'asmBatch',fabricator:'asmBatch',dysonFoundry:'dysonBatch',trader:'traderBatch',quantumForge:'quantumForgeBatch'}[mtype];return bk&&G.mods[bk]}
+function _capOfKey(mtype){const ck={smelter:'smeltCap',furnace:'smeltCap',manufacturer:'asmCap',crusher:'crushCap',refinery:'refineCap',wiremill:'wireCap',press:'pressCap',drill:'drillCap',assembler:'asmCap',trader:'traderCap',quantumForge:'qforgeCap',dysonFoundry:'dysonCap'}[mtype];return ck&&G.mods[ck]}
+function isAsm(m){return m.type==='assembler'||m.type==='fabricator'||m.type==='manufacturer'||m.type==='dysonFoundry'}
 // ============================================================
 //  EXTENDER — a 1-tile "I/O port" that elongates a host machine.
 // Point it at a machine (or another extender) when placing. Belts
@@ -6443,9 +6597,137 @@ function extenderHost(x,y,m){
 // What direction does the extender's far (open) side face?
 // If hostDir points back toward the host, the open side is the opposite.
 function extenderOpenDir(m){return OPP[m.hostDir]}
+// ============================================================
+//  v39 — MACHINE CONSTRUCTION SYSTEM (Builder crates)
+// ============================================================
+// Advanced machines are no longer sold: the store carries base machines
+// only, and advanced tiers are CONSTRUCTED on top of an existing machine
+// (Assembler -> Fabricator -> Manufacturer, Smelter -> Furnace).
+// The player picks an upgrade in the machine panel; the machine becomes a
+// construction site. Builder crates are then dropped onto the machine —
+// each crate feeds exactly ONE ingredient. The first attached Extender
+// adds +1 ingredient slot; further Extenders only extend connection range.
+const UPGRADES={
+  smelter:   {to:'furnace',     ingredients:{ironPlate:4,copperPlate:4,gear:2},                 tech:'metallurgy'},
+  assembler: {to:'fabricator',  ingredients:{ironPlate:4,copperWire:4,gear:2,copperCoil:2},     tech:'fabricator'},
+  fabricator:{to:'manufacturer',ingredients:{steelPlate:4,motor:2,advCircuit:2,alloyCasing:2}, tech:'manufacturer'}
+};
+const BUILDER_FALL=0.42;     // seconds a crate spends falling onto the machine
+const BUILD_TIME=2600;       // ms of final assembly once every ingredient is delivered
+const BUILDER_CORNERS=[[-1,-1],[1,-1],[1,1],[-1,1]];
+function upgOf(m){return UPGRADES[m.type]||null}
+function upgUnlocked(m){const u=upgOf(m);return!!(u&&(!u.tech||G.tech.has(u.tech)))}
+// direct Extenders attached to the machine at (x,y)
+function constructionExtCount(x,y){
+  let n=0;
+  for(const d of DIRS){
+    const c=cellAt(x+DV[d].x,y+DV[d].y);
+    if(c&&c.m&&isExtender(c.m)&&c.m.hostDir===OPP[d])n++;
+  }
+  return n;
+}
+// live ingredient slots = attached builders (+1 if an Extender is attached)
+function constructionSlots(m,x,y){
+  const c=m.construction;if(!c)return 0;
+  return c.builders.length+(constructionExtCount(x,y)>0?1:0);
+}
+// is this ingredient covered by a live slot? (slot i covers ingredient i)
+function constructionCovers(m,x,y,type){
+  const c=m.construction;if(!c||!(type in c.need))return false;
+  return Object.keys(c.need).indexOf(type)<constructionSlots(m,x,y);
+}
+// world-pixel corner position of builder slot idx on the machine tile
+function builderCorner(x,y,idx){
+  const c=center(x,y);
+  const o=BUILDER_CORNERS[((idx%4)+4)%4];
+  return{x:c.x+o[0]*T*.30,y:c.y+o[1]*T*.30};
+}
+function startConstruction(m,x,y){
+  const u=upgOf(m);if(!u||m.construction)return false;
+  flushMachine(m,x,y);
+  m.construction={to:u.to,need:Object.assign({},u.ingredients),got:{},builders:[],buildT:0,spend:0};
+  m.state='idle';m.timer=0;m.hold=null;m.arm=0;
+  SFX.select();
+  const c=center(x,y);
+  text(c.x,c.y-T*.22,'CONSTRUCTION SITE','#e8a05d');
+  pulse(c.x,c.y,'rgba(232,160,93,.75)',T*.15,T*.72,.5,3);
+  if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
+  ui();
+  return true;
+}
+function attachBuilder(x,y){
+  const cell=cellAt(x,y);if(!cell||!cell.m||cell.ref)return false;
+  const m=cell.m;
+  if(!m.construction){
+    const p=center(x,y);
+    if(upgOf(m)){SFX.err();text(p.x,p.y,'open machine - pick upgrade','#e85d4a')}
+    else{SFX.err();text(p.x,p.y,'cannot upgrade','#e85d4a')}
+    return false;
+  }
+  const c=m.construction;
+  const ings=Object.keys(c.need);
+  if(constructionSlots(m,x,y)>=ings.length){
+    SFX.err();const p=center(x,y);text(p.x,p.y,'all slots filled','#e85d4a');return false;
+  }
+  const price=priceOf('builder');
+  if(G.money<price){SFX.err();const p=center(x,y);text(p.x,p.y,'Need $'+fmt(price),'#e85d4a');return false}
+  G.money-=price;
+  c.spend+=price;
+  const idx=c.builders.length;
+  c.builders.push({idx,item:ings[idx],land:G.time,impacted:false});
+  SFX.belt();
+  ui();
+  return true;
+}
+function updConstruction(m,x,y,dt){
+  const c=m.construction;if(!c)return;
+  for(const b of c.builders){
+    if(!b.impacted&&G.time-b.land>=BUILDER_FALL){
+      b.impacted=true;
+      const p=builderCorner(x,y,b.idx);
+      burst(p.x,p.y+T*.06,'#c9a468',6,'shard');
+      pulse(p.x,p.y,'rgba(201,154,91,.85)',T*.05,T*.3,.3,2);
+      SFX.place();
+      if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
+    }
+  }
+  let all=true;
+  for(const k in c.need)if((c.got[k]||0)<c.need[k]){all=false;break}
+  if(all){
+    c.buildT+=dt*1000;
+    if(Math.random()<dt*2.4){const p=center(x,y);sparkle(p.x+rnd(-T*.22,T*.22),p.y+rnd(-T*.18,T*.18),'#ffd27a',2)}
+    if(c.buildT>=BUILD_TIME)finishUpgrade(m,x,y);
+  }
+}
+function finishUpgrade(m,x,y){
+  const c=m.construction;if(!c)return;
+  const to=c.to;
+  m.invested=(m.invested||0)+(c.spend||0);
+  m.construction=null;
+  m.type=to;m.recipe=null;m.alloy=null;m.state='idle';m.timer=0;m.hold=null;
+  m.inQ.length=0;m.outQ.length=0;m.buf={};m.pipeStage=0;m.pipeItem=null;m.pipeTimer=0;m.pop=1.6;
+  const p=center(x,y);
+  burst(p.x,p.y,HOST_COLORS[to]||'#e8a05d',14,'spark');
+  pulse(p.x,p.y,'rgba(255,210,122,.9)',T*.2,T*.95,.6,4);
+  text(p.x,p.y-T*.26,(TOOLS[to].name||to).toUpperCase()+' ONLINE','#ffc857');
+  SFX.tech();
+  if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
+  ui();
+}
+function cancelConstruction(m,x,y){
+  const c=m.construction;if(!c)return;
+  let sal=Math.floor((c.spend||0)*.5);
+  for(const k in c.got)sal+=Math.floor((ITEMS[k]?ITEMS[k].value:0)*c.got[k]*G.mods.salvage);
+  m.construction=null;
+  m.state='idle';m.timer=0;m.hold=null;
+  if(sal>0){G.money+=sal;const p=center(x,y);text(p.x,p.y,'+$'+fmt(sal)+' salvage','#9fd45e')}
+  const p=center(x,y);burst(p.x,p.y,'#8a7a66',8,'smoke');SFX.scrap();
+  if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
+  ui();
+}
 function recipePool(m){
   if(m.type==='dysonFoundry')return Object.keys(RECIPES).filter(r=>ITEMS[r].tier>=5);
-  return Object.keys(RECIPES).filter(r=>(m.type==='fabricator')===(ITEMS[r].tier>=5&&ITEMS[r].tier<7));
+  return Object.keys(RECIPES).filter(r=>(m.type==='fabricator'||m.type==='manufacturer')===(ITEMS[r].tier>=5&&ITEMS[r].tier<7));
 }
 // Input buffer threshold — scales with the machine's batch size so a machine
 // can always stockpile enough input to fire its next batch (plus one extra
@@ -6461,7 +6743,7 @@ function _batchOf(m){
   if(m.type==='trader')return G.mods.traderBatch||1;
   if(m.type==='quantumForge')return G.mods.quantumForgeBatch||1;
   // processing machines — use the short key names that match G.mods
-  const bk={smelter:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch',drill:'drillBatch'}[m.type];
+  const bk={smelter:'smeltBatch',furnace:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch',drill:'drillBatch'}[m.type];
   return (bk&&G.mods[bk])||1;
 }
 function needs(m,type){
@@ -6471,7 +6753,7 @@ function needs(m,type){
   const batch=_batchOf(m);
   return(m.buf[type]||0)<r[type]*(batch+1);
 }
-function smelterAlloy(m){return m.type==='smelter'&&m.alloy?ALLOY[m.alloy]:null}
+function smelterAlloy(m){return m.type==='furnace'&&m.alloy?ALLOY[m.alloy]:null}   // v39 — alloys are FURNACE-only (Smelter upgrade)
 function needsAlloy(m,type){
   const r=smelterAlloy(m);if(!r||!r[type])return false;
   const batch=_batchOf(m);
@@ -6497,6 +6779,12 @@ function canAccept(x,y,type){
     return canAccept(host.hx,host.hy,type);
   }
   if(m.type==='excavator')return type==null?true:type==='coal';
+  // v39 — construction site: accepts only assigned, still-needed ingredients
+  if(m.construction){
+    if(type==null)return true;
+    const c=m.construction;
+    return(type in c.need)&&(c.got[type]||0)<c.need[type]&&constructionCovers(m,x,y,type);
+  }
   if(smelterAlloy(m))return needsAlloy(m,type);
   if(PROC[m.type])return!!PROC[m.type][type]&&m.inQ.length<qCap(m.type);
   if(isAsm(m))return needs(m,type);
@@ -6546,6 +6834,15 @@ function deliver(x,y,mdir,type){
     const host=extenderHost(x,y,m);
     if(!host)return false;
     return deliver(host.hx,host.hy,OPP[m.hostDir],type);
+  }
+  // v39 — construction site intake: fed ingredients count toward the upgrade
+  if(m.construction){
+    const c=m.construction;
+    if(!(type in c.need)||(c.got[type]||0)>=c.need[type])return false;
+    if(!constructionCovers(m,x,y,type))return false;
+    c.got[type]=(c.got[type]||0)+1;SFX.feed();
+    if(G.sel)refreshUp();
+    return true;
   }
   if(smelterAlloy(m)){
     if(!needsAlloy(m,type))return false;
@@ -6668,7 +6965,11 @@ function processExcavator(m,x,y,dt){
         }
         // === DIG + REVEAL ORES ===
         const depth=mc.depth||1;
-        const minedDepth=depth+1;
+        // v41 — SAND STRATA (user: "it goes sand directly into clay"): digging
+        // a sand tile skips the whole Topsoil band and lands on the FIRST
+        // Clay sub-layer. Grass tiles still dig Topsoil first (depth+1).
+        const sandTop=depth<2&&isSandAt(mx,my);
+        const minedDepth=sandTop?CLAY_START_DEPTH:depth+1;
         if(minedDepth>=LAYERS.length)continue;
         const ore=oreAtDepth(mx,my,minedDepth);
         mc.depth=minedDepth;
@@ -6720,6 +7021,8 @@ function updMachines(dt){
     // All input forwarding happens in deliver(); all output happens via the
     // host's tryDispense() walking the chain. Skip its own processing entirely.
     if(isExtender(m))continue;
+    // v39 — construction site: no crafting, no output — only build progress
+    if(m.construction){updConstruction(m,x,y,dt);continue}
     const sp=spdOf(m,x,y);
     if(m.type==='drill'||m.type==='megaDrill'){
       // NOTE: megaDrill is dead code — a2_megaDrill tech is stripped on load.
@@ -6727,11 +7030,15 @@ function updMachines(dt){
       const isMega=m.type==='megaDrill';
       // For blank stone layers (terr='floor', depth>1) the drill mines the
       // generic 'stone' item — synthesize a meta so the MK gate passes (lv:1).
+      // v38 — SAND: a drill on an undug riverbank beach (terr='floor',
+      // depth<2, isSandAt) extracts the 'sand' item. Ore terrain still wins —
+      // a copper vein on a beach is a copper tile that happens to be sandy.
+      const onSand = cell.terr==='floor' && (cell.depth||0)<2 && isSandAt(x,y);
       const onStone = cell.terr==='floor' && cell.depth && cell.depth>1;
-      const meta = onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr];
+      const meta = onSand ? {item:'sand',lv:1,chance:1} : (onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr]);
       const able=meta&&m.level>=meta.lv; // MK gate: upgrade the drill to mine richer ores
       // Refresh m.ore if the terrain changed (e.g. via purifyOres or excavator)
-      const wantOre = onStone ? 'stone' : ORE_OF[cell.terr];
+      const wantOre = onSand ? 'sand' : (onStone ? 'stone' : ORE_OF[cell.terr]);
       if(able && (!m.ore || m.ore!==wantOre))m.ore=wantOre;
       // If the drill has auto-modules and is mid-pipeline, don't start a new
       // drill cycle — wait for the pipeline to finish first (sequential).
@@ -6825,11 +7132,11 @@ function updMachines(dt){
       if(!m.hold && m.inQ.length && !(hasAutoModules(m) && isPipelineBusy(m))){
         const inn=m.inQ.shift();
         m.hold={in:inn,out:PROC[m.type][inn]};m.timer=0;
-        if(m.type==='smelter')SFX.smelt();
+        if(m.type==='smelter'||m.type==='furnace')SFX.smelt();
       }
       if(m.hold){
         m.timer+=dt*1000*sp;
-        if(m.type==='smelter'&&Math.random()<dt*2.5){
+        if((m.type==='smelter'||m.type==='furnace')&&Math.random()<dt*2.5){
           const c=center(x,y);
           // lingering steam — slow rise, long life, drifts sideways
           G.parts.push({x:c.x+T*.18+(Math.random()-.5)*T*.2,y:c.y-T*.25,
@@ -6923,7 +7230,7 @@ function updMachines(dt){
         const batch=G.mods[batchKey]||1;
         const cap=2+G.mods.asmCap+batch-1+countModules(m,'capacity')*3;  // capacity gem bonus
         if(m.timer>=INT[m.type]&&m.outQ.length<cap){
-          const n=Math.min(batch,cap-m.outQ.length);
+          const n=Math.min(batch*(m.type==='manufacturer'?2:1),cap-m.outQ.length);   // v39 — Manufacturer: 2 per craft
           pushProducedItems(m, m.recipe, n, cap);  // Output Gem applies
           m.state='idle';m.timer=0;SFX.craft();
           const c=center(x,y);burst(c.x,c.y,ITEMS[m.recipe].col,8,'spark');sparkle(c.x,c.y,'#fff',4);pulse(c.x,c.y,ITEMS[m.recipe].col,T*.2,T*.55,.4,2.5);
@@ -6944,13 +7251,17 @@ function updMachines(dt){
       if(m.pop>0)m.pop=Math.max(0,m.pop-dt*4);
       // EXTENDER: passive I/O port — no own processing (same as in-grid branch)
       if(isExtender(m))continue;
+      if(m.construction){updConstruction(m,x,y,dt);continue}   // v39 — construction site
       const sp=spdOf(m,x,y);
       if(m.type==='drill'||m.type==='megaDrill'){
         const isMega=m.type==='megaDrill';
+        // v38 — SAND: off-grid grass riverbanks (virtual/stored cells, depth<2)
+        // are beach tiles — drills extract 'sand' from them.
+        const onSand = cell.terr==='floor' && (cell.depth||0)<2 && isSandAt(x,y);
         const onStone = cell.terr==='floor' && cell.depth && cell.depth>1;
-        const meta = onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr];
+        const meta = onSand ? {item:'sand',lv:1,chance:1} : (onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr]);
         const able=meta&&m.level>=meta.lv;
-        const wantOre = onStone ? 'stone' : ORE_OF[cell.terr];
+        const wantOre = onSand ? 'sand' : (onStone ? 'stone' : ORE_OF[cell.terr]);
         if(able && (!m.ore || m.ore!==wantOre))m.ore=wantOre;
         const pipelineBusy = hasAutoModules(m) && isPipelineBusy(m);
         if(able&&!pipelineBusy&&m.outQ.length<qCap(m)){
@@ -7010,7 +7321,7 @@ function updMachines(dt){
         if(!m.hold && m.inQ.length && !(hasAutoModules(m) && isPipelineBusy(m))){
           const inn=m.inQ.shift();
           m.hold={in:inn,out:PROC[m.type][inn]};m.timer=0;
-          if(m.type==='smelter')SFX.smelt();
+          if(m.type==='smelter'||m.type==='furnace')SFX.smelt();
         }
         if(m.hold){
           m.timer+=dt*1000*sp;
@@ -7023,7 +7334,7 @@ function updMachines(dt){
                 if(G.sel)refreshUp();
               }
             }else{
-              const bk={smelter:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch'}[m.type];
+              const bk={smelter:'smeltBatch',furnace:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch'}[m.type];
               const n=Math.min(G.mods[bk]||1,qCap(m.type)-m.outQ.length);
               pushProducedItems(m, outItem, n);  // Output Gem applies
               m.hold=null;m.timer=0;
@@ -7072,7 +7383,7 @@ function updMachines(dt){
           const batch=G.mods[batchKey]||1;
           const cap=2+G.mods.asmCap+batch-1+countModules(m,'capacity')*3;  // capacity gem bonus
           if(m.timer>=INT[m.type]&&m.outQ.length<cap){
-            const n=Math.min(batch,cap-m.outQ.length);
+            const n=Math.min(batch*(m.type==='manufacturer'?2:1),cap-m.outQ.length);   // v39 — Manufacturer: 2 per craft
             pushProducedItems(m, m.recipe, n, cap);  // Output Gem applies
             m.state='idle';m.timer=0;
             if(G.sel)refreshUp();
@@ -7134,6 +7445,11 @@ function itemPos(it){
 function invOf(m){
   const rows=[];
   const add=(type,n,where)=>{if(n>0)rows.push({type,n,where})};
+  if(m.construction){   // v39 — delivered upgrade ingredients sit on the site
+    for(const k of Object.keys(m.construction.got))
+      if(m.construction.got[k]>0)rows.push({type:k,n:m.construction.got[k],where:'site',noEject:true});
+    return rows;
+  }
   const group=(arr,where)=>{const c={};for(const t of arr)c[t]=(c[t]||0)+1;
     for(const t of Object.keys(c))add(t,c[t],where)};
   if(m.type==='drill')group(m.outQ,'out');
@@ -7854,6 +8170,7 @@ function drawWiremill(g,px,py,s,m,time){
 }
 const ASM_PAL={body:'#4f93d8'};
 const FAB_PAL={body:'#9b6bd6',star:true};
+const MAN_PAL={body:'#7a5cc8',star:true,star2:true};   // v39 — Manufacturer (Fabricator upgrade)
 function drawAssembler(g,px,py,s,m,time,P){
   P=P||ASM_PAL;
   const cx=px+s/2,cy=py+s/2;
@@ -7873,6 +8190,14 @@ function drawAssembler(g,px,py,s,m,time,P){
     g.save();g.translate(px+s*.24,py+s*.26);
     g.beginPath();
     for(let i=0;i<8;i++){const R=i%2?s*.022:s*.05,a=i/8*Math.PI*2-Math.PI/2;
+      i?g.lineTo(Math.cos(a)*R,Math.sin(a)*R):g.moveTo(Math.cos(a)*R,Math.sin(a)*R)}
+    g.closePath();g.fill();g.restore();
+  }
+  if(P.star2){   // v39 — Manufacturer: twin star badge (tier-2 read)
+    g.fillStyle='rgba(255,255,255,.95)';
+    g.save();g.translate(px+s*.315,py+s*.335);
+    g.beginPath();
+    for(let i=0;i<8;i++){const R=i%2?s*.016:s*.036,a=i/8*Math.PI*2-Math.PI/2;
       i?g.lineTo(Math.cos(a)*R,Math.sin(a)*R):g.moveTo(Math.cos(a)*R,Math.sin(a)*R)}
     g.closePath();g.fill();g.restore();
   }
@@ -7935,6 +8260,7 @@ function drawBooster(g,px,py,s,m,time,col,ink,glyph){
   g.fillText('+'+mult+'%',cx,cy+H*0.30);
 }
 function machineActive(m){
+  if(m.construction)return true;   // v39 — construction sites read as active
   if(m.hold)return true;
   if(m.state==='craft')return true;
   if(m.type==='drill'||m.type==='megaDrill')return true;  // always mining
@@ -8005,7 +8331,8 @@ function drawTrader(g,px,py,s,m,time){
 const HOST_COLORS={
   drill:'#e0533d',smelter:'#f0913b',crusher:'#c2a24e',refinery:'#46b5a4',
   press:'#7a8699',wiremill:'#e8a93c',assembler:'#4f93d8',fabricator:'#9b6bd6',
-  dysonFoundry:'#9b6bd6',quantumForge:'#c040e0',seller:'#58b368',trader:'#3a85a0',excavator:'#5a4a3a'
+  dysonFoundry:'#9b6bd6',quantumForge:'#c040e0',seller:'#58b368',trader:'#3a85a0',excavator:'#5a4a3a',
+  furnace:'#c9542e',manufacturer:'#7a5cc8',builder:'#c99a5b'
 };
 // blend two colors: result = base*(1-amount) + overlay*amount
 // Accepts hex (#rrggbb) or rgb(r,g,b) strings for both base and overlay.
@@ -8485,6 +8812,181 @@ function drawExtender(g,x,y,px,py,s,m,time){
   levelPips(g,px,py,s,m.level);
 }
 function drawExtenderBridges(g,x,y,px,py,s,m){}
+// v39 — FURNACE (Smelter upgrade): hotter body, twin crucibles joined by a
+// flow channel (the alloying pair), two back intake hoppers for the
+// multi-input read. Same bld()/outNotch/ring/pips language as every machine.
+function drawFurnace(g,px,py,s,m,time){
+  const cx=px+s/2,cy=py+s/2;
+  bld(g,px,py,s,'#c9542e');outNotch(g,px,py,s,m.dir);
+  const active=!!m.hold;
+  // twin crucibles
+  for(const sx of[-s*.13,s*.13]){
+    const k=active?1+.06*Math.sin(time*9+sx):1;
+    g.fillStyle='#fff';
+    g.save();g.translate(cx+sx,cy+s*.05);g.scale(k,k);
+    g.beginPath();
+    g.moveTo(0,-s*.13);
+    g.bezierCurveTo(s*.075,-s*.05,s*.10,-s*.01,s*.10,s*.04);
+    g.arc(0,s*.04,s*.10,0,Math.PI);
+    g.bezierCurveTo(-s*.10,-s*.01,-s*.075,-s*.05,0,-s*.13);
+    g.fill();
+    if(active){g.fillStyle='#f0913b';g.beginPath();g.arc(0,s*.045,s*.042,0,7);g.fill()}
+    g.restore();
+  }
+  // connecting flow channel between the crucibles
+  g.fillStyle=active?'#f0913b':'rgba(255,255,255,.75)';
+  rr(g,cx-s*.10,cy+s*.02,s*.20,s*.045,s*.02);g.fill();
+  // two intake hoppers on the back edge (multi-input read)
+  g.fillStyle='rgba(255,255,255,.9)';
+  rr(g,cx-s*.30,cy-s*.27,s*.11,s*.08,s*.02);g.fill();
+  rr(g,cx+s*.19,cy-s*.27,s*.11,s*.08,s*.02);g.fill();
+  if(active)ring(g,cx,cy,s*.33,m.timer/INT.furnace,'rgba(255,255,255,.95)',s*.028);
+  queueDots(g,px,py,s,m);levelPips(g,px,py,s,m.level);
+}
+// v39 — BUILDER CRATE: a cardboard construction-delivery box. The silhouette
+// reads BOX first — strong square, slightly oversized, clearly visible top
+// flaps and reinforced edges. Copper strapping tape, metal corner brackets,
+// a small hazard chip and a shipping label carry the "construction delivery"
+// identity. Everything is flat + chunky to sit beside the machine family.
+function drawBuilderCrate(g,cx,cy,sz,dy,rot,sq,det){   // det=false → LOD silhouette
+  // ground shadow — stays put while the crate falls from above
+  g.fillStyle='rgba(60,50,32,.22)';
+  rr(g,cx-sz*.44,cy-sz*.34,sz*.88,sz*.78,sz*.10);g.fill();
+  g.save();
+  g.translate(cx,cy+(dy||0));
+  if(rot)g.rotate(rot);
+  const sqy=sq||1,sqx=2-sqy;      // squash trades height for width on impact
+  g.scale(sqx,sqy);
+  const B=sz*.86,x=-B/2,y=-B/2;
+  // cardboard body
+  g.fillStyle='#c99a5b';
+  rr(g,x,y,B,B,sz*.09);g.fill();
+  // reinforced edge stroke
+  g.strokeStyle='#8a6234';g.lineWidth=Math.max(1,sz*.045);
+  rr(g,x+sz*.035,y+sz*.035,B-sz*.07,B-sz*.07,sz*.06);g.stroke();
+  // top flaps: center seam (+ fold marks when large on screen)
+  g.lineWidth=Math.max(1,sz*.035);
+  g.beginPath();g.moveTo(0,y+sz*.06);g.lineTo(0,y+B-sz*.06);g.stroke();
+  if(det!==false){g.beginPath();
+    g.moveTo(-sz*.05,y+sz*.10);g.lineTo(0,y+sz*.16);g.moveTo(sz*.05,y+sz*.10);g.lineTo(0,y+sz*.16);
+    g.moveTo(-sz*.05,y+B-sz*.10);g.lineTo(0,y+B-sz*.16);g.moveTo(sz*.05,y+B-sz*.10);g.lineTo(0,y+B-sz*.16);
+    g.stroke();}
+  // copper strapping tape across the middle (over the seam)
+  g.fillStyle='#d9824a';
+  g.fillRect(x+sz*.02,-sz*.075,B-sz*.04,sz*.15);
+  g.fillStyle='rgba(0,0,0,.14)';
+  g.fillRect(x+sz*.02,-sz*.075,B-sz*.04,sz*.028);
+  g.fillRect(x+sz*.02,sz*.047,B-sz*.04,sz*.028);
+  // metal corner brackets (+ bolts when large on screen)
+  const bo=sz*.055,bw=sz*.16,bt=sz*.05;
+  for(const[qx,qy]of[[-1,-1],[1,-1],[1,1],[-1,1]]){
+    const px2=qx>0?x+B-bw:x,py2=qy>0?y+B-bt:y;
+    g.fillStyle='#9aa4b0';
+    g.fillRect(px2,py2,bw,bt);
+    g.fillRect(qx>0?x+B-bt:x,qy>0?y+B-bw:y,bt,bw);
+    if(det!==false){
+      g.fillStyle='#3a3f4a';
+      g.beginPath();g.arc(px2+bw*.5,py2+bt*.5,Math.max(.6,sz*.022),0,7);g.fill();
+    }
+  }
+  if(det!==false){
+    // hazard-stripe chip (top-left, diagonal stripes clipped to the chip)
+    const hx=x+sz*.12,hy=y+sz*.12,hw=sz*.17;
+    g.save();
+    g.beginPath();rr(g,hx,hy,hw,hw,sz*.03);g.clip();
+    g.translate(hx+hw/2,hy+hw/2);g.rotate(-.6);
+    g.fillStyle='#3a3a40';g.fillRect(-hw,-hw,hw*2,hw*2);
+    g.fillStyle='#e8862e';
+    for(let i=-3;i<=3;i++)g.fillRect(i*sz*.075-sz*.016,-hw,sz*.033,hw*2);
+    g.restore();
+    // shipping label (bottom-right): cream tag with address lines
+    g.fillStyle='#f4ecd6';
+    rr(g,x+B-sz*.30,y+B-sz*.26,sz*.22,sz*.17,sz*.02);g.fill();
+    g.fillStyle='#8a7a5a';
+    g.fillRect(x+B-sz*.26,y+B-sz*.215,sz*.14,sz*.022);
+    g.fillRect(x+B-sz*.26,y+B-sz*.175,sz*.10,sz*.022);
+    g.fillStyle='#d9824a';
+    g.fillRect(x+B-sz*.26,y+B-sz*.135,sz*.06,sz*.03);
+    // folded tool-arm hint along the left edge (subtle)
+    g.fillStyle='#6c7480';
+    rr(g,x+sz*.055,-sz*.045,sz*.16,sz*.05,sz*.02);g.fill();
+    g.fillStyle='#d9824a';
+    g.beginPath();g.arc(x+sz*.085,0,Math.max(.8,sz*.03),0,7);g.fill();
+  }
+  g.restore();
+}
+// screen-pixel corner position of builder slot idx (px,py = tile origin, s = tile px)
+function builderCornerPx(px,py,s,idx){
+  const o=BUILDER_CORNERS[((idx%4)+4)%4];
+  return{x:px+s/2+o[0]*s*.30,y:py+s/2+o[1]*s*.30};
+}
+// v39 — construction-site overlay drawn on top of the host machine:
+// falling/settled crates with ingredient badges, extender bonus slot marker,
+// ingredient pips, and the feed/assembly progress bar.
+function drawConstructionSite(g,x,y,px,py,s,m,time){
+  const c=m.construction;if(!c)return;
+  const cx=px+s/2,cy=py+s/2;
+  const ings=Object.keys(c.need);
+  const slots=constructionSlots(m,x,y);
+  const det=T*G.cam.zoom>100;   // LOD: crate fine details + badges only when close
+  // 1) attached builder crates (fall-in + impact squash while landing)
+  for(const b of c.builders){
+    const p=builderCornerPx(px,py,s,b.idx);
+    const t=G.time-b.land;
+    if(t<BUILDER_FALL){
+      const f=Math.max(t,0)/BUILDER_FALL;
+      drawBuilderCrate(g,p.x,p.y,s*.42,-(1-f*f)*s*2.1,(1-f)*.12,1,det);
+    }else{
+      const it=Math.min((t-BUILDER_FALL)/.18,1);
+      drawBuilderCrate(g,p.x,p.y,s*.42,0,0,it<1?1-.16*Math.sin(it*Math.PI):1,det);
+    }
+    // ingredient badge — the item this crate feeds
+    if(det&&itemSpr[b.item]){
+      g.fillStyle='#fff';
+      g.beginPath();g.arc(p.x+s*.14,p.y+s*.16,s*.115,0,7);g.fill();
+      g.drawImage(itemSpr[b.item],p.x+s*.14-s*.08,p.y+s*.16-s*.08,s*.16,s*.16);
+    }
+  }
+  // 2) extender bonus slot marker (first attached Extender = +1 slot)
+  if(constructionExtCount(x,y)>0&&c.builders.length<ings.length){
+    const p=builderCornerPx(px,py,s,c.builders.length);
+    g.strokeStyle='#d9824a';g.lineWidth=Math.max(1,s*.035);
+    g.setLineDash([s*.07,s*.05]);
+    rr(g,p.x-s*.21,p.y-s*.21,s*.42,s*.42,s*.06);g.stroke();
+    g.setLineDash([]);
+    g.fillStyle='#d9824a';
+    g.font=`700 ${s*.22}px "Chakra Petch",sans-serif`;
+    g.textAlign='center';g.textBaseline='middle';
+    g.fillText('+',p.x,p.y+s*.01);
+  }
+  // 3) ingredient pips along the bottom: full ring = slot live, dot fill = delivered
+  const n=ings.length;
+  const step=s*.72/Math.max(n,1);
+  for(let i=0;i<n;i++){
+    const k=ings[i],needN=c.need[k],gotN=Math.min(c.got[k]||0,needN);
+    const ix=cx-(n-1)*step/2+i*step,iy=py+s*.905;
+    const cov=i<slots;
+    g.fillStyle=cov?'#fff':'rgba(255,255,255,.4)';
+    g.beginPath();g.arc(ix,iy,s*.05,0,7);g.fill();
+    g.fillStyle=cov?(gotN>=needN?'#9fd45e':ITEMS[k].col):'rgba(0,0,0,.15)';
+    g.beginPath();g.arc(ix,iy,s*.034,0,7);g.fill();
+  }
+  // 4) progress bar — feed % in copper, final assembly in amber
+  let gotAll=0,needAll=0;
+  for(const k of ings){gotAll+=Math.min(c.got[k]||0,c.need[k]);needAll+=c.need[k]}
+  const all=needAll>0&&gotAll>=needAll;
+  const p2=all?Math.min(c.buildT/BUILD_TIME,1):gotAll/Math.max(needAll,1);
+  const bw=s*.62,bh=Math.max(3,s*.075);
+  const bx=cx-bw/2,by=cy-s*.30;
+  g.fillStyle='rgba(35,28,18,.55)';
+  rr(g,bx-1.5,by-1.5,bw+3,bh+3,bh/2);g.fill();
+  g.fillStyle='rgba(255,255,255,.16)';
+  rr(g,bx,by,bw,bh,bh/2);g.fill();
+  g.fillStyle=all?'#e8a05d':'#d9824a';
+  if(p2>0){rr(g,bx,by,Math.max(bh,p2*bw),bh,bh/2);g.fill()}
+  if(all){g.fillStyle=`rgba(255,235,180,${.4+.4*Math.sin(time*10)})`;
+    rr(g,bx+p2*bw-bh*.5,by,bh,bh,bh/2);g.fill()}
+}
 function drawMachine(g,x,y,px,py,s,m,time,cell){
   const W=(m.w||1)*s, H=(m.h||1)*s, cx=px+W/2, cy=py+H/2;
 
@@ -8514,8 +9016,8 @@ function drawMachine(g,x,y,px,py,s,m,time,cell){
   // active glow halo (pulsing) behind the building
   if(active&&m.type!=='belt'&&m.type!=='splitter'&&m.type!=='bridge'){
     const gl=0.5+0.5*Math.sin(time*3+x+y);
-    const col=m.type==='smelter'?'255,140,60':m.type==='drill'?'224,138,60':
-              (m.type==='assembler'||m.type==='fabricator')?'120,170,230':
+    const col=m.construction?'232,160,90':m.type==='smelter'?'255,140,60':m.type==='drill'?'224,138,60':
+              (m.type==='assembler'||m.type==='fabricator'||m.type==='manufacturer')?'120,170,230':
               m.type==='trader'?'64,208,240':m.type==='excavator'?'180,140,80':'150,200,120';
     g.save();
     g.globalAlpha=0.10+0.10*gl;
@@ -8551,7 +9053,12 @@ function drawMachine(g,x,y,px,py,s,m,time,cell){
     case'seller':drawSeller(g,px,py,s,m,time);break;
     case'trader':drawTrader(g,px,py,s,m,time);break;
     case'extender':drawExtender(g,x,y,px,py,s,m,time);break;
+    case'furnace':drawFurnace(g,px,py,s,m,time);break;
+    case'manufacturer':drawAssembler(g,px,py,s,m,time,MAN_PAL);break;
+    case'builder':drawBuilderCrate(g,px+s/2,py+s/2,s*.86,0,0,1);break;
   }
+  // v39 — construction site overlay (crates, badges, pips, progress) on top
+  if(m.construction)drawConstructionSite(g,x,y,px,py,s,m,time);
   if(transformed)g.restore();
   if(cineSaved)g.restore();
 }
@@ -8621,6 +9128,7 @@ function drawTerrainMottle(ctx,bx0,by0,bx1,by1){
       if(x>=0&&x<G.N&&y>=0&&y<G.N){depth=G.grid[y][x].depth||1}
       else{const oc=G._offGrid&&G._offGrid.get(offKey(x,y));depth=oc?(oc.depth||0):0}
       if(!depth||isWaterAt(x,y))continue;
+      if(depth<2&&isSandAt(x,y))continue;      // v38 — sand: no layer mottle
       const li=layerInfoAt(depth);if(!li)continue;
       const h=_hash2(x*5+101,y*5+57);
       if(h<.35)continue;
@@ -8644,6 +9152,7 @@ function drawTerrainDetail(ctx,bx0,by0,bx1,by1){
     else{const oc=G._offGrid&&G._offGrid.get(offKey(x,y));depth=oc?(oc.depth||0):0}
     if(!depth)continue;                 // grass — drawGrassDeco owns it
     if(isWaterAt(x,y))continue;         // water — own animated painter
+    if(depth<2&&isSandAt(x,y))continue; // v38 — sand stays flat-clean (no layer marks)
     const li=layerInfoAt(depth);if(!li)continue;
     const lt=li.name.toLowerCase();
     const LD=li.type.dark, LB=li.type.base;
@@ -8772,6 +9281,69 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1){
     }
   }
 }
+// v41 — CACTI: the plant layer over SAND (user: "a cactus which is like a
+// layer on top of sand so the layers go plants then grass/sand then dirt
+// then clay"). Same family as drawGrassDeco: deterministic per-tile hash,
+// sparse, hand-drawn canvas shapes — an upright saguaro (rounded body,
+// up-curving arms, rib strokes, occasional crown bloom) in the flat chunky
+// style. Every color reuses existing palette values (no new literals):
+// seller green body, battery-dark ribs, deco-pink bloom.
+function drawSandDeco(ctx,bx0,by0,bx1,by1){
+  for(let y=by0;y<by1;y++)for(let x=bx0;x<bx1;x++){
+    // fast path: the cached isSandAt rejects most visible tiles (one numeric
+    // Map.get); only sand candidates pay the dug-tile check (ttOf's sand rule
+    // inlined — a dug tile (depth>=2) has no sand surface, so no cactus).
+    if(!isSandAt(x,y))continue;
+    const sc=cellAt(x,y);
+    if(sc&&(sc.depth||1)>=2)continue;
+    const h=_hash2(x*5+3,y*5+11);
+    if(h>0.11)continue;              // sparse — dune fields stay calm, each cactus reads alone
+    const h2=_hash2(x*13+1,y*13+7);
+    const px=x*T,py=y*T;
+    const bw=T*.16;                          // body width
+    const bh=T*(.34+((h2*7)%1)*.12);         // body height ~.34-.46 T
+    const cx0=px+T*(.3+((h2*11)%1)*.4);      // x position, jittered inside the tile
+    const cy0=py+T*(.82-((h2*13)%1)*.08);    // base in the lower half of the tile
+    const lean=(((h2*17)%1)-.5)*T*.06;       // slight organic lean (grass-blade convention)
+    // body — rounded-top capsule, upright like the blades
+    ctx.fillStyle='#58b368';
+    ctx.beginPath();
+    ctx.moveTo(cx0-bw/2,cy0);
+    ctx.lineTo(cx0-bw/2+lean*.6,cy0-bh+bw/2);
+    ctx.arc(cx0+lean*.6,cy0-bh+bw/2,bw/2,Math.PI,0);
+    ctx.lineTo(cx0+bw/2,cy0);
+    ctx.closePath();
+    ctx.fill();
+    // arms — 0-2 L-shaped strokes with round caps, leaning up like the body
+    const nA=Math.floor(h2*2.999);
+    ctx.strokeStyle='#58b368';ctx.lineWidth=T*.075;ctx.lineCap='round';
+    for(let a=0;a<nA;a++){
+      const ah=_hash2(x*29+a*7,y*31+a*13);
+      const side=a%2?1:-1;
+      const ay=cy0-bh*(.34+ah*.26);
+      const t=(cy0-ay)/bh;                   // 0 at base → 1 at top
+      const ax=cx0+side*bw*.35+lean*t;       // body edge at this height (lean-following)
+      ctx.beginPath();
+      ctx.moveTo(ax,ay);
+      ctx.quadraticCurveTo(ax+side*T*.1,ay,ax+side*T*.1,ay-T*(.07+ah*.06));
+      ctx.stroke();
+    }
+    // ribs — 2 dark vertical strokes inside the body (the cactus read)
+    ctx.strokeStyle='#3f6e2a';ctx.lineWidth=T*.024;ctx.globalAlpha=.55;
+    for(const ro of [-.16,.16]){
+      ctx.beginPath();
+      ctx.moveTo(cx0+bw*ro,cy0-T*.05);
+      ctx.lineTo(cx0+bw*ro+lean*.75,cy0-bh+T*.09);
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    // bloom — occasional pink flower dot on the crown
+    if(h2>.74){
+      ctx.fillStyle='#e06080';
+      ctx.beginPath();ctx.arc(cx0+lean*.6,cy0-bh+T*.015,T*.032,0,7);ctx.fill();
+    }
+  }
+}
 // Ambient drifting motes — atmospheric dust/pollen specks that drift across
 // the visible area. Adds subtle motion to the scene so it doesn't feel frozen
 // when no machines are active. Drawn UNDER machines/items so they never
@@ -8837,6 +9409,8 @@ function render(time){
   drawTerrainDetail(ctx,tx0,ty0,tx1,ty1);
   // ---- grass decorations (flowers, grass blades) on grass tiles ----
   drawGrassDeco(ctx,tx0,ty0,tx1,ty1,time);
+  // ---- v41: cacti — the plant layer over sand (deserts & beaches) ----
+  drawSandDeco(ctx,tx0,ty0,tx1,ty1);
   // ---- ambient drifting motes (atmospheric dust/pollen) ----
   // Slowly drifting translucent specks across the visible area — adds life
   // to the scene without distracting from gameplay. Rendered under machines
@@ -8946,6 +9520,18 @@ function render(time){
       rr(ctx,x*T+2,y*T+2,T-4,T-4,T*.2);ctx.fill();
       ctx.strokeStyle='rgba(216,67,46,.75)';ctx.lineWidth=2;
       rr(ctx,x*T+2,y*T+2,T-4,T-4,T*.2);ctx.stroke();
+    }else if(G.tool==='builder'&&cell&&cell.m&&!cell.ref){
+      // v39 — Builder ghost: crate preview over the machine it would attach to
+      const mm=cell.m;
+      const ok=mm.construction
+        ?constructionSlots(mm,x,y)<Object.keys(mm.construction.need).length&&G.money>=priceOf('builder')
+        :!!upgOf(mm);
+      ctx.strokeStyle=ok?'rgba(88,179,104,.85)':'rgba(216,67,46,.85)';
+      ctx.lineWidth=2;
+      rr(ctx,x*T+2,y*T+2,T-4,T-4,T*.2);ctx.stroke();
+      ctx.globalAlpha=.55;
+      drawBuilderCrate(ctx,x*T+T/2,y*T+T/2,T*.86,0,0,1);
+      ctx.globalAlpha=1;
     }else if(cell&&((!cell.m&&!cell.ref)||((G.tool==='bridge'||G.tool==='splitter'||G.tool==='filter')&&cell.m&&cell.m.type==='belt'))){
       const ok=canPlace(G.tool,cell,x,y)&&G.money>=priceOf(G.tool)&&unlocked(G.tool);
       const fp=footprint(G.tool,useDir), W=fp.w*T, H=fp.h*T;
@@ -8954,7 +9540,7 @@ function render(time){
       ctx.globalAlpha=.55;
       const ghostDir=(G.tool==='bridge'||G.tool==='splitter')&&cell.m&&cell.m.type==='belt'?cell.m.dir:useDir;
       const ghost={type:G.tool,dir:ghostDir,level:1,timer:0,spin:time*2,state:'idle',hold:null,
-        rr:0,buf:{},inQ:[],outQ:[],recipe:null,pop:0,w:fp.w,h:fp.h,ax:x,ay:y,ore:cell.terr!=='floor'?ORE_OF[cell.terr]:null};
+        rr:0,buf:{},inQ:[],outQ:[],recipe:null,pop:0,w:fp.w,h:fp.h,ax:x,ay:y,ore:cell.terr!=='floor'?ORE_OF[cell.terr]:((cell.depth||0)<2&&isSandAt(x,y)?'sand':null)};
       if(G.tool==='belt'||G.tool==='splitter'||G.tool==='bridge'||G.tool==='filter')ghostRoad(ctx,x,y,ghost,time);
       else drawMachine(ctx,x,y,x*T,y*T,T,ghost,time,cell);
       ctx.globalAlpha=1;
@@ -9074,6 +9660,9 @@ function render(time){
 function footCells(t,x,y,dir){const{w,h}=footprint(t,dir||G.dir);const out=[];for(let dy=0;dy<h;dy++)for(let dx=0;dx<w;dx++)out.push([x+dx,y+dy]);return out;}
 function canPlace(t,cell,x,y){
   if(t==='del')return false;
+  // v39 — Builder: "placeable" only onto an upgradable machine tile (the
+  // real attach happens in place()/pointerdown — never a real cell).
+  if(t==='builder')return!!(cell&&cell.m&&!cell.ref&&(cell.m.construction||upgOf(cell.m)));
   // Water tiles (rivers/lakes) are unplaceable — EXCEPT for bridges, which
   // can span water. Check both cell.water (off-grid virtual cells) and
   // isWaterAt (in-grid tiles where cellAt returns the raw grid cell without
@@ -9084,6 +9673,10 @@ function canPlace(t,cell,x,y){
     if(!cell||cell.m)return false;
     // Placeable on any ore terrain
     if(cell.terr!=='floor'&&!cell.water)return true;
+    // v38 — placeable on an undug riverbank SAND tile (the drill extracts the
+    // 'sand' item). Covers in-grid topsoil banks AND off-grid grass banks
+    // (virtual cells, depth 0) once off-grid building is unlocked.
+    if(cell.terr==='floor'&&(cell.depth||0)<2&&isSandAt(x,y))return true;
     // Also placeable on a mined stone/deeprock layer (depth>1) — the drill
     // will produce 'stone' item from the blank rock. This lets players drop
     // a drill on an excavated-but-barren tile to keep mining it deeper.
@@ -9131,6 +9724,12 @@ function canPlace(t,cell,x,y){
 function place(x,y,dir,quiet){
   let cell=cellAt(x,y),t=G.tool;
   const useDir=dir||G.dir;
+  // v39 — Builder crates never occupy a tile: they attach to a machine.
+  if(t==='builder'){
+    if(cell&&cell.m&&!cell.ref)return attachBuilder(x,y);
+    if(!quiet){SFX.err();flash(x,y);const c=center(x,y);text(c.x,c.y,'aim at a machine','#e85d4a')}
+    return false;
+  }
   if(!unlocked(t)){SFX.err();return false}
   const price=priceOf(t);
   if(!canPlace(t,cell,x,y)){if(!quiet){SFX.err();flash(x,y)}return false}
@@ -9152,7 +9751,9 @@ function place(x,y,dir,quiet){
     // On ore terrain → mine that ore. On a mined blank stone layer (terr='floor'
     // but depth>1, e.g. an excavator-dug tile that yielded no ore) → mine the
     // generic 'stone' item so the drill isn't a dead placement.
-    m.ore = cell.terr!=='floor' ? ORE_OF[cell.terr] : 'stone';
+    // v38 — on an undug sand riverbank → mine 'sand' (before the stone fallback).
+    m.ore = cell.terr!=='floor' ? ORE_OF[cell.terr]
+          : ((cell.depth||0)<2&&isSandAt(x,y) ? 'sand' : 'stone');
   }
   // BRIDGE rework: the bridge is "a belt on top of a belt".
   // The bridge keeps its OWN direction (player-chosen via useDir);
@@ -9214,7 +9815,7 @@ function scrap(x,y){
   if(cell.ref){const[ax,ay]=cell.ref;return scrap(ax,ay);} // scrap from any covered tile
   if(!cell.m)return;
   const m=cell.m;
-  const refund=Math.floor(m.invested*(m.type==='excavator'?.8:.5));
+  const refund=Math.floor(m.invested*(m.type==='excavator'?.8:.5))+(m.construction?Math.floor((m.construction.spend||0)*.5):0);   // v39 — refund attached Builders
   G.money+=refund;
   if(G.sel&&G.sel.x===x&&G.sel.y===y)closeUp();
   const c=center(x,y);
@@ -9310,6 +9911,20 @@ canvas.addEventListener('pointerdown',e=>{
   // that's the whole point of the expansion upgrades).
   const p=canvasPos(e);if(!inB(p.x,p.y)&&!offGridEnabled()&&!buildableAt(p.x,p.y))return;
   const cell=cellAt(p.x,p.y);
+  // v39 — BUILDER: clicking a machine drops a construction crate onto it;
+  // clicking anything else is an error. Never enters the normal place flow.
+  if(G.tool==='builder'){
+    if(cell&&cell.m&&!cell.ref){
+      attachBuilder(p.x,p.y);
+      G.drag={tool:null,origin:p,startPx:canvasPx(e),last:p,dir:G.dir,painted:new Set(),moved:false,mode:'tap'};
+    }else{
+      SFX.err();flash(p.x,p.y);
+      const cc=center(p.x,p.y);text(cc.x,cc.y,'aim at a machine','#e85d4a');
+      G.drag=null;
+    }
+    try{canvas.setPointerCapture(e.pointerId)}catch(_){}
+    return;
+  }
   // No tool selected (deselected by re-clicking) → "inspect only" mode.
   // Tapping any tile opens its panel (or does nothing for empty dirt).
   if(!G.tool){
@@ -10218,7 +10833,7 @@ function itemSources() {
     const techEntry = TECHS.find(t => t.id === techId);
     // Metallurgy is not act2, so never "locked" in the unrevealed sense.
     const locked = false;
-    (out[alloy] = out[alloy] || []).push({src:'smelter', srcLabel:'Smelter (Alloy)', techId, techName:'Metallurgy', reqTech:techId, locked, alloyInputs:inputs});
+    (out[alloy] = out[alloy] || []).push({src:'smelter', srcLabel:'Furnace (Smelter upgrade)', techId, techName:'Metallurgy', reqTech:techId, locked, alloyInputs:inputs});
   }
   // 4. RECIPES — assembler / fabricator / dysonFoundry
   for (const [item, inputs] of Object.entries(RECIPES)) {
@@ -10233,7 +10848,7 @@ function itemSources() {
     const it = ITEMS[item];
     if (it) {
       if (it.tier >= 7) machineLabel = 'Dyson Foundry';
-      else if (it.tier >= 5) machineLabel = 'Fabricator';
+      else if (it.tier >= 5) machineLabel = 'Fabricator / Manufacturer';
       else machineLabel = 'Assembler';
     }
     (out[item] = out[item] || []).push({src:'asm', srcLabel:machineLabel, techId, techName, reqTech:techId, locked, recipeInputs:inputs});
@@ -10935,12 +11550,17 @@ function _refreshUpImpl(){
     const size=1+2*rad;
     const coalProgress=m.coalProgress||0;
     const sp=spdOf(m,G.sel.x,G.sel.y);
-    const nextDepth=Math.min(depth+1,LAYERS.length-1);
+    // v41 — sand strata: a sand tile's next dig jumps straight to Clay
+    const nextDepth=Math.min((depth<2&&isSandAt(G.sel.x,G.sel.y))?CLAY_START_DEPTH:depth+1,LAYERS.length-1);
     const nInfo=layerInfoAt(nextDepth);
     const tName=nInfo?nInfo.name:'?';
     const burnRate=(EXCAVATOR_COAL_BURN_RATE*sp).toFixed(1);
     ex.textContent=`L${nextDepth} ${tName} (${nInfo?nInfo.subIdx+1:0}/${nInfo?nInfo.type.count:1}) · ${size}×${size} · ${Math.round(coalProgress)}/${EXCAVATOR_COAL_PER_BLOCK} coal · ${burnRate}/s`}
-  else if(m.type==='smelter'&&m.alloy){exLab.textContent='Alloying';
+  else if(m.construction){exLab.textContent='Constructing';
+    const cc2=m.construction;let gA=0,nA=0;
+    for(const k in cc2.need){gA+=Math.min(cc2.got[k]||0,cc2.need[k]);nA+=cc2.need[k]}
+    ex.textContent=TOOLS[cc2.to].name+' · '+Math.round(gA/Math.max(nA,1)*100)+'% delivered'}
+  else if(m.type==='furnace'&&m.alloy){exLab.textContent='Alloying';
     // Show alloy + batch size so Twin Crucible etc. are visibly applied.
     const batch = G.mods.smeltBatch||1;
     const batchTag = batch>1 ? ` ×${batch} batch` : '';
@@ -10949,7 +11569,7 @@ function _refreshUpImpl(){
     // Show batch size so Twin/Crucible upgrades for each machine are visibly
     // applied — previously the panel showed only input count, hiding the
     // batch upgrade entirely (looked like the upgrade did nothing).
-    const bk={smelter:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch'}[m.type];
+    const bk={smelter:'smeltBatch',furnace:'smeltBatch',crusher:'crushBatch',refinery:'refineBatch',wiremill:'wireBatch',press:'pressBatch'}[m.type];
     const batch = (bk && (G.mods[bk]||1)) || 1;
     const batchTag = batch>1 ? ` ×${batch} batch` : '';
     ex.textContent=Object.keys(PROC[m.type]).length+' input types'+batchTag}
@@ -10983,6 +11603,89 @@ function _refreshUpImpl(){
     }
   }
   else{exLab.textContent='Carries';ex.textContent='items'}
+  // === v39 CONSTRUCTION / TIER-UPGRADE section ===
+  const conSec=document.getElementById('conSec');
+  if(conSec){
+    conSec.innerHTML='';
+    if(m.construction){
+      const c=m.construction;
+      conSec.style.display='block';
+      const ings=Object.keys(c.need);
+      const slots=constructionSlots(m,G.sel.x,G.sel.y);
+      const hdr=document.createElement('div');
+      hdr.style.cssText='display:flex;align-items:center;gap:6px;margin:2px 0 6px';
+      hdr.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">CONSTRUCTING</span>'+
+        '<span style="font-size:11px;font-weight:700">'+TOOLS[c.to].name.toUpperCase()+'</span>'+
+        '<span style="font-size:9px;color:var(--muted);margin-left:auto">'+ings.length+' ingredients · '+slots+'/'+ings.length+' slots</span>';
+      conSec.appendChild(hdr);
+      for(let i=0;i<ings.length;i++){
+        const k=ings[i],needN=c.need[k],gotN=Math.min(c.got[k]||0,needN);
+        const row=document.createElement('div');
+        row.style.cssText='display:flex;align-items:center;gap:6px;margin:3px 0';
+        const cv=document.createElement('canvas');cv.width=cv.height=30;
+        cv.getContext('2d').drawImage(itemSpr[k],0,0,30,30);
+        row.appendChild(cv);
+        const lab=document.createElement('div');
+        lab.style.cssText='flex:1;font-size:10.5px;color:'+(i<slots?'inherit':'var(--muted)');
+        lab.innerHTML=ITEMS[k].name+' <b>'+gotN+'/'+needN+'</b>'+(i<slots?'':' <span style="color:#e85d4a;font-size:9px">· needs slot '+(i+1)+'</span>');
+        row.appendChild(lab);
+        const bar=document.createElement('div');
+        bar.style.cssText='width:64px;height:7px;border-radius:4px;background:rgba(0,0,0,.10);overflow:hidden;flex:none';
+        const fill=document.createElement('div');
+        fill.style.cssText='height:100%;width:'+(gotN/needN*100)+'%;background:'+(gotN>=needN?'#9fd45e':'#d9824a');
+        bar.appendChild(fill);row.appendChild(bar);
+        const slot=document.createElement('span');
+        slot.style.cssText='font-size:11px;width:16px;text-align:center;flex:none;color:#d9824a';
+        slot.textContent=i<c.builders.length?'●':(i===c.builders.length&&constructionExtCount(G.sel.x,G.sel.y)>0?'⊕':'—');
+        row.appendChild(slot);
+        conSec.appendChild(row);
+      }
+      const foot=document.createElement('div');
+      foot.style.cssText='display:flex;align-items:center;gap:8px;margin-top:6px';
+      const hintEl2=document.createElement('div');
+      hintEl2.style.cssText='flex:1;font-size:9.5px;color:var(--muted);line-height:1.45';
+      hintEl2.innerHTML=slots<ings.length
+        ?'Select the <b>Builder</b> tool and click this machine to drop another crate (one ingredient each). First attached Extender = +1 slot.'
+        :'All slots live — feed the ingredients in by belt. The machine stays locked while upgrading.';
+      foot.appendChild(hintEl2);
+      const cancel=document.createElement('button');
+      cancel.className='ub danger';
+      cancel.style.cssText='font-size:10px;padding:5px 8px;flex:none';
+      cancel.textContent='CANCEL';
+      cancel.addEventListener('click',()=>{audio();cancelConstruction(m,G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl()});
+      foot.appendChild(cancel);
+      conSec.appendChild(foot);
+    }else if(upgOf(m)){
+      conSec.style.display='block';
+      const u=upgOf(m),unl=upgUnlocked(m);
+      const box=document.createElement('div');
+      box.style.cssText='border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin:2px 0 6px;background:#fdf6e8';
+      const ings=Object.keys(u.ingredients).map(k=>u.ingredients[k]+'× '+ITEMS[k].name).join(' · ');
+      const head=document.createElement('div');
+      head.style.cssText='display:flex;align-items:center;gap:6px';
+      head.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">TIER UPGRADE</span>'+
+        '<span style="font-size:11px;font-weight:700">'+TOOLS[u.to].name.toUpperCase()+'</span>';
+      box.appendChild(head);
+      const sub=document.createElement('div');
+      sub.style.cssText='font-size:9.5px;color:var(--muted);margin:3px 0 5px;line-height:1.5';
+      sub.textContent=(TOOLS[u.to].desc||'')+' Build set: '+ings+'.';
+      box.appendChild(sub);
+      const btn=document.createElement('button');
+      btn.className='ub main';
+      btn.style.cssText='width:100%;font-size:10.5px;justify-content:center';
+      if(unl){
+        btn.textContent='START CONSTRUCTION — '+TOOLS[u.to].name.toUpperCase();
+        btn.addEventListener('click',()=>{audio();startConstruction(m,G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl()});
+      }else{
+        const tn=(TECHS.find(t=>t.id===u.tech)||{name:u.tech}).name;
+        btn.textContent='🔒 RESEARCH '+tn.toUpperCase();
+        btn.style.opacity=.55;
+        btn.addEventListener('click',()=>{audio();focusTech(u.tech)});
+      }
+      box.appendChild(btn);
+      conSec.appendChild(box);
+    }else conSec.style.display='none';
+  }
   // deposit row
   const depRow=document.getElementById('upDepRow');
   if(m.type==='drill'&&cell&&ORES[cell.terr]){
@@ -10993,7 +11696,7 @@ function _refreshUpImpl(){
   }else depRow.style.display='none';
   // inventory
   const invSec=document.getElementById('invSec');
-  const hasInv=m.type==='drill'||m.type==='excavator'||PROC[m.type]||isAsm(m)||m.type==='trader';
+  const hasInv=m.type==='drill'||m.type==='excavator'||PROC[m.type]||isAsm(m)||m.type==='trader'||!!m.construction;
   if(hasInv){
     invSec.style.display='block';
     const list=document.getElementById('invList');list.innerHTML='';
@@ -11020,7 +11723,7 @@ function _refreshUpImpl(){
   }else invSec.style.display='none';
   // recipe picker
   const rs=document.getElementById('recipeSec');
-  if(isAsm(m)){
+  if(isAsm(m)&&!m.construction){   // v39 — recipe locked while upgrading
     // Recipes are shown in dedicated category tabs on the left strip.
     rs.style.display='none';
     const ms2=document.getElementById('marketSec');if(ms2)ms2.style.display='none';
@@ -11062,8 +11765,8 @@ function _refreshUpImpl(){
       }
       const nd=document.createElement('div');nd.className='rneeds';nd.innerHTML=needsHTML;pane.appendChild(nd);
     }
-  }else if(m.type==='smelter'&&G.tech.has('metallurgy')){
-    // Smelter alloy picker: AUTO tab + ALLOYS tab on the left strip.
+  }else if(m.type==='furnace'&&!m.construction){
+    // v39 — Furnace alloy picker (alloys are Furnace-only): AUTO + ALLOYS tabs.
     rs.style.display='none';
     const ms3=document.getElementById('marketSec');if(ms3)ms3.style.display='none';
     const AUTO='__auto__';
@@ -11290,6 +11993,10 @@ function _refreshUpImpl(){
   // Re-show action buttons that may have been hidden during ore inspect
   document.getElementById('upBuy').style.display='flex';
   document.getElementById('upRotate').style.display='flex';
+  if(m.construction){   // v39 — MK upgrade + rotate locked while the site is active
+    document.getElementById('upBuy').style.display='none';
+    document.getElementById('upRotate').style.display='none';
+  }
   document.getElementById('upSell').style.display='flex';
   const buy=document.getElementById('upBuy');
   if(canUp&&m.level<MAX_LVL){buy.style.display='flex';
@@ -11621,14 +12328,14 @@ document.getElementById('flushBtn').addEventListener('click',()=>{
   flushMachine(m,G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl();
 });
 document.getElementById('upBuy').addEventListener('click',()=>{
-  audio();const m=selMachine();if(!m||!UP[m.type]||m.level>=MAX_LVL)return;
+  audio();const m=selMachine();if(!m||m.construction||!UP[m.type]||m.level>=MAX_LVL)return;
   const c=upCost(m);if(G.money<c){SFX.err();return}
   G.money-=c;m.invested+=c;m.level++;m.pop=1.6;SFX.up();
   const p=center(G.sel.x,G.sel.y);
   burst(p.x,p.y,'#9fd45e',10,'spark');sparkle(p.x,p.y,'#d4ffb0',6);pulse(p.x,p.y,'rgba(159,212,94,.7)',T*.2,T*.8,.5,3.5);text(p.x,p.y,'LVL '+m.level,'#9fd45e');_refreshUpLastTime=0;_refreshUpImpl();
 });
 document.getElementById('upRotate').addEventListener('click',()=>{
-  audio();const m=selMachine();if(!m||m.type==='seller')return;
+  audio();const m=selMachine();if(!m||m.type==='seller'||m.construction)return;
   const oldW=m.w,oldH=m.h;
   if(oldW!==oldH&&G.sel){
     // Compute the new footprint and verify all new tiles are free
@@ -13019,6 +13726,7 @@ function serializeMachine(m){
   if(m.underLevel!==undefined)o.underLevel=m.underLevel;
   if(m.underInvested!==undefined)o.underInvested=m.underInvested;
   if(m.hostDir!==undefined)o.hostDir=m.hostDir;
+  if(m.construction)o.construction=m.construction;   // v39 — upgrade-in-progress state
   // FILTER: persist the selected item so filter configs survive save/load
   if(m.filterItem!==undefined)o.filterItem=m.filterItem;
   // EXCAVATOR: persist bore radius + coal progress so mid-cycle state survives
@@ -13106,12 +13814,17 @@ function loadGame(){
     _waterCache.clear();
     try{_wFast.clear()}catch(e){}          // v35e — far-zoom water paints are seed-dependent too
     try{_wDens.clear()}catch(e){}          // v36 — smooth-depth densities too
+    try{_sandCache.clear()}catch(e){}      // v38 — sand beaches too
+    try{_terrainCache.clear()}catch(e){}   // v38 — cached sand-tinted fills are seed-dependent
     _peCache=null;_peFrame=-1;  // invalidate prestige effect cache
     G.grid=d.grid.map(row=>row.map(c=>{
       const m=c.m?Object.assign({spin:0,pop:0,disp:0,arm:0,rr:0,modules:[null,null,null]},c.m):null;
       // Only validate recipe for assemblers — traders use m.recipe for market items,
       // smelters use m.alloy. Don't wipe those.
-      if(m&&m.recipe&&(m.type==='assembler'||m.type==='fabricator'||m.type==='dysonFoundry')&&!RECIPES[m.recipe])m.recipe=null;
+      if(m&&m.recipe&&(m.type==='assembler'||m.type==='fabricator'||m.type==='manufacturer'||m.type==='dysonFoundry')&&!RECIPES[m.recipe])m.recipe=null;
+      // v39 — save migration: Smelters mid-alloy become Furnaces (alloys are
+      // Furnace-only now; the machine was already doing the advanced work).
+      if(m&&m.type==='smelter'&&m.alloy)m.type='furnace';
       return {terr:c.terr,v:c.v,q:c.q||2,depth:c.depth||1,m,ref:c.ref,buildable:c.buildable||false};
     }));
     G.items=d.items?d.items.map(it=>Object.assign({dead:false},it)):[];
@@ -13123,7 +13836,8 @@ function loadGame(){
     if(d.offGrid&&Array.isArray(d.offGrid)){
       for(const[k,c]of d.offGrid){
         const m=c.m?Object.assign({spin:0,pop:0,disp:0,arm:0,rr:0,modules:[null,null,null]},c.m):null;
-        if(m&&m.recipe&&(m.type==='assembler'||m.type==='fabricator'||m.type==='dysonFoundry')&&!RECIPES[m.recipe])m.recipe=null;
+        if(m&&m.recipe&&(m.type==='assembler'||m.type==='fabricator'||m.type==='manufacturer'||m.type==='dysonFoundry')&&!RECIPES[m.recipe])m.recipe=null;
+        if(m&&m.type==='smelter'&&m.alloy)m.type='furnace';   // v39 — save migration
         G._offGrid.set(k,{terr:c.terr||'floor',v:c.v||0,q:c.q||0,depth:c.depth||0,
           m,
           ref:c.ref||null,offGrid:true,ox:c.ox,oy:c.oy,buildable:c.buildable||false});
@@ -13330,7 +14044,7 @@ if ('serviceWorker' in navigator) {
       demoZoom=true;
       // v10: deterministic river seed — chosen so the river meanders through the
       // mid-west and provably misses every machine/belt/ore/decor tile.
-      G.waterSeed=1.9;try{_waterCache.clear();_wFast.clear();_wDens.clear()}catch(e){}
+      G.waterSeed=1.9;try{_waterCache.clear();_wFast.clear();_wDens.clear();_sandCache.clear();_terrainCache.clear()}catch(e){}
       G.grid=buildGrid();G.N=GN;G.items=[];G.parts=[];G.texts=[];G.rings=[]
       G.time=0;G.money=1000000;G.earned=0;G.hist=[];G.won=false;
       G.hover=null;G.sel=null;G.drag=null;G.tool='drill';G.dir='E';
@@ -13677,6 +14391,12 @@ if ('serviceWorker' in navigator) {
   //   4. Items tab (if inventory is visible)
   //   5. Stats tab
   function selectBestOnOpen(){
+    // v39 — machine under construction: the Stats tab carries the build
+    // progress + builder slots, so land there directly.
+    if(typeof selMachine==='function'){
+      const m0=selMachine();
+      if(m0&&m0.construction){selectTab('stats');return}
+    }
     // 1. _catState
     if(typeof _catState!=='undefined' && typeof currentPickerSection==='function' && typeof selMachine==='function' && G.sel){
       const section = currentPickerSection();
@@ -13695,25 +14415,25 @@ if ('serviceWorker' in navigator) {
       if(m){
         let selectedId = null;
         if(typeof isAsm==='function' && isAsm(m) && m.recipe) selectedId = m.recipe;
-        else if(m.type==='smelter' && m.alloy) selectedId = m.alloy;
+        else if(m.type==='furnace' && m.alloy) selectedId = m.alloy;
         else if(m.type==='trader' && m.recipe) selectedId = m.recipe;
         else if(m.type==='filter' && m.filterItem) selectedId = m.filterItem;
         if(selectedId && typeof ITEMS!=='undefined' && ITEMS[selectedId]){
           const cat = itemCategory(selectedId);
           // Smelter alloy mode uses 'auto' for the Auto tab and 'alloy' for alloys.
           // _catState stores 'auto' or 'alloy', not the item category.
-          if(m.type==='smelter' && m.alloy){
+          if(m.type==='furnace' && m.alloy){
             const tab = panel.querySelector('.up-tab[data-tab="cat-alloy"]');
             if(tab){ selectTab('cat-alloy'); return; }
-          }else if(m.type==='smelter' && !m.alloy){
+          }else if(m.type==='furnace' && !m.alloy){
             const tab = panel.querySelector('.up-tab[data-tab="cat-auto"]');
             if(tab){ selectTab('cat-auto'); return; }
           }else{
             const tab = panel.querySelector('.up-tab[data-tab="cat-'+cat+'"]');
             if(tab){ selectTab('cat-'+cat); return; }
           }
-        }else if(m.type==='smelter'){
-          // Smelter with no alloy selected → Auto tab
+        }else if(m.type==='furnace'){
+          // Furnace with no alloy selected → Auto tab
           const tab = panel.querySelector('.up-tab[data-tab="cat-auto"]');
           if(tab){ selectTab('cat-auto'); return; }
         }
