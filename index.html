@@ -2515,7 +2515,10 @@ function paintTerrain(ctx,x,y,T,depth){
   // Helper: get the base color [r,g,b] for the tile at (tx,ty)
   function neighborColor(tx,ty){
     const c=cellAt(tx,ty);
-    if(c&&c.water) return [92,156,172];            // water shallow (animated painter owns it)
+    // v46 — a corner-gap at a water boundary must show the REAL water base
+    // color (what paintWater actually fills), not a flat approximation —
+    // otherwise the gap outside the rounded border reads as a wrong patch.
+    if((c&&c.water)||isWaterAt(tx,ty)) return _wColAt(tx+.5,ty+.5).slice(0,3);
     // v38 — a sand tile's corner-gap fill must be SAND (with the same noise
     // modulation its real fill uses), not its layer color.
     if((c?(c.depth||0):0)<2&&isSandAt(tx,ty)){
@@ -2651,19 +2654,21 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
   // upper layer's identity dominates (you see "topsoil edge" looking down
   // into clay, not "clay edge" looking up). This matches how real geological
   // cross-sections are drawn — the surface layer's color frames the hole.
+  // v46 — EVERY border is a LIGHT RIM: each value is its layer's edge color
+  // lifted by the same luminosity step as the sand rim (≈ +11%/channel).
+  // Light catches the shallow edge of every stratum.
   const LAYER_BORDER_COL={
-    topsoil:'#a89060',     // warm brown (matches topsoil base)
-    clay:'#b87a5a',        // reddish-brown (matches clay base)
-    stone:'#9a9a9a',       // neutral grey (matches stone base)
-    deeprock:'#545458',    // dark grey (matches deeprock base)
-    bedrock:'#343438',     // very dark grey (matches bedrock base)
-    mantle:'#c4602a',      // dark orange (matches mantle base)
-    water:'#3a6a9a',      // shore line — sandy blue where water meets land
-    sand:'#e8d8ab'        // v39 — sand rim LIGHTER than the fill (user spec), drawn with the same stroke as every layer
+    topsoil:'#bca16c',     // light warm brown (topsoil edge, +11% over base edge)
+    clay:'#ce8965',        // light reddish-brown (clay edge)
+    stone:'#acacac',       // light neutral grey (stone edge)
+    deeprock:'#5e5e62',    // lifted dark grey (deeprock edge)
+    bedrock:'#3a3a3f',     // lifted very-dark grey (bedrock edge)
+    mantle:'#db6c2f',      // light orange (mantle edge)
+    sand:'#e8d8ab'        // v39 — sand rim LIGHTER than the fill (the reference rim)
   };
-  // Priority order: index 0 = highest priority (shallowest), 5 = lowest (deepest)
-  // Water is between grass and topsoil — a sandy shore color wins over dirt/stone
-  // but the grass green still wins at the outer boundary.
+  // Priority order: index 0 = highest priority (shallowest), 5 = lowest (deepest).
+  // (Water pairs return earlier with the LAND side's light rim — grass still
+  // wins any pair it touches.)
   const LAYER_PRIORITY=['grass','water','sand','topsoil','clay','stone','deeprock','mantle'];  // v38 — sand: shallowest deposit
   function edgeCol(a,b){
     if(a===b)return null;  // same type — no border
@@ -2676,10 +2681,13 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
     if(a==='grass'||b==='grass'){
       return '#9ac06a';  // grass vs any layer = green border
     }
-    // Water vs land — brown shore color (dirt/earth tone, not blue).
-    // The border reads as the land's edge against the water.
+    // v46 — Water vs land: the LAND side's light rim (user: the dirt border
+    // and every other border gets the same +luminosity as the sand tile,
+    // INCLUDING TOUCHING WATER TILES). A sand bank gets the sand rim, dirt
+    // gets the light dirt rim — the shore reads as the land's lit edge.
     if(a==='water'||b==='water'){
-      return '#8a7a5a';  // earthy brown shore — dirt edge against water
+      const land=a==='water'?b:a;
+      return LAYER_BORDER_COL[land]||'#bca16c';
     }
     // Two different layer types — use the SHALLOWER (higher priority) layer's
     // border color. grass > water > topsoil > clay > stone > deeprock > bedrock > mantle
@@ -2969,7 +2977,7 @@ const TOOLS={
   del:      {name:'Scrap',      base:0,   esc:1,    desc:'Remove · 50% back'},
   trader:   {name:"Trader's Post",base:800,esc:1.35,desc:"Auto-buys a selected item with money — like a drill for cash",tech:'trader'},
   extender: {name:'Extender',   base:80,  esc:1.30, desc:'Elongates a machine — adds an extra belt port. Point it at the machine (or another extender) when placing.', tech:'extender'},
-  builder:  {name:'Builder',    base:250, esc:1.30, desc:'Construction crate — click a machine under upgrade. It falls on, latches in and feeds ONE ingredient. First attached Extender = +1 ingredient slot.', tech:'smelter'},
+  builder:  {name:'Builder',    base:250, esc:1.30, desc:'Construction box — drag onto an upgradable machine to box it up and start the tier upgrade automatically. Feed the ingredients through Extenders (one ingredient each).', tech:'smelter'},
   furnace:  {name:'Furnace',    base:4000, esc:1.45,desc:'Alloy furnace — smelts ores AND combines two inputs into advanced alloys. Built by upgrading a Smelter.', tech:'metallurgy'},
   manufacturer:{name:'Manufacturer',base:20000,esc:1.5,desc:'Mass-produces flagship goods — 2 per craft. Built by upgrading a Fabricator.', tech:'manufacturer'},
   excavator:{name:'Excavator',  base:500, esc:1.5,  desc:'Burns coal to mine the block underneath — digs down through geological layers. Higher MK = faster cycle. Radius tech mines a wider area. 80% refund on scrap.', tech:'excavator'}
@@ -3272,6 +3280,7 @@ const TECHS=[
   {id:'excavator', name:'Excavator', cost:5000, req:'drill', col:1,row:13,kind:'machine',desc:'Unlock the Excavator — burns 1 coal/sec to build progress. Every 90 coal consumed, it mines the block underneath, digging down through 6 geological layer types (84 sub-layers total). If no coal arrives for 3 seconds, progress drains at 1/sec — keep coal flowing! Each block has an RNG chance to strike ore (most yield plain rock; lucky blocks strike a vein). Type 1 Topsoil (4): coal/copper/iron. Type 2 Clay (8): tin/aluminum/quartz. Type 3 Stone (12): silver/nickel/gold. Type 4 Deeprock (16): silver/nickel/gold/lithium. Type 5 Bedrock (20): lithium/titanium/tungsten. Type 6 Mantle (24): crystal/uranium/platinum. Quartz spawns on sand (riverbank beaches and desert dunes) and in Clay strata — never in the dirt. 80% refund on scrap.'},
   {id:'excavatorRadius1', name:'Wide Bore', cost:80000, req:'excavator', col:2,row:13,kind:'boost',desc:'Unlock 3×3 bore mode for the Excavator. Select the Excavator and use the radius picker to switch between 1×1 and 3×3 — your choice, not mandatory.',apply:()=>{G.mods.excavatorRadiusMax=1}},
   {id:'excavatorRadius2', name:'Cascade Bore', cost:600000, req:'excavatorRadius1', col:3,row:13,kind:'boost',desc:'Unlock 5×5 bore mode. Use the radius picker on the Excavator to choose 1×1, 3×3, or 5×5.',apply:()=>{G.mods.excavatorRadiusMax=2}},
+  {id:'excavatorRadius3', name:'Continental Bore', cost:2500000, req:'excavatorRadius2', col:4,row:13,kind:'boost',desc:'Unlock 9×9 bore mode. The flat-dig rule steps the shallowest tiles first, so a 9×9 bore levels the whole floor as it descends.',apply:()=>{G.mods.excavatorRadiusMax=4}},
   {id:'excavatorGem', name:'Vein Extraction', cost:200000, req:'excavatorRadius1', col:4,row:13,kind:'boost',desc:'Unlock the Vein Gem — a special module for Excavators that gives +5% ore yield per geological layer excavated. Stacks with multiple gems.',apply:()=>{G.mods.excavatorGemUnlocked=true;hint('Vein Gem unlocked! Install it on Excavators from the Modules tab.')}},
   {id:'purify1',  name:'Ore Purification I', cost:60000, req:'survey2',col:3,row:6,kind:'world',desc:'Refine drilling techniques — every ore deposit on the map is upgraded one quality tier.',apply:()=>purifyOres()},
   {id:'purify2',  name:'Ore Purification II',cost:400000,req:'purify1',col:4,row:6,kind:'world',desc:'Even purer extraction — every deposit upgraded one more tier.',apply:()=>purifyOres()},
@@ -3323,7 +3332,7 @@ const TECHS=[
   // ===== SPLITTER / BRIDGE (from start) =====
   {id:'splitter', name:'Flow Splitting',    cost:500,   req:'start',   col:1,row:9,kind:'machine',desc:'Unlock the Splitter — place it on a road to evenly divide items across every output road that connects to it.'},
   {id:'bridge',   name:'Bridging',           cost:3000, req:'splitter',col:2,row:9,kind:'machine',desc:'Unlock the Bridge — place a belt on top of an existing belt.'},
-  {id:'extender', name:'Extender',           cost:1500, req:'splitter',col:2,row:10,kind:'machine',desc:'Unlock the Extender — point it at a machine (or another Extender) to add an extra belt port. Items delivered to the Extender flow into the host machine; output items can flow out through it too. Great for machines that need 4+ belts.'},
+  {id:'extender', name:'Extender',           cost:1500, req:'splitter',col:2,row:10,kind:'machine',desc:'Unlock the Extender — point it at a machine (or another Extender) to add an extra belt port. Items delivered to the Extender flow into the host machine; output items can flow out through it too. Also the ingredient interface for Builder boxes: point one at a boxed machine and pick the ingredient it feeds.'},
 
   // ===== RECIPE TREE (from assembler / refinery) =====
   {id:'optics',   name:'Optics',            cost:8000,  req:'assembler', col:5,row:29,kind:'recipe',desc:'Recipe: Lens = glass.'},
@@ -4064,145 +4073,107 @@ const ORE_SHAPE={
   gold:'fatcube', lithium:'tablet', titanium:'bar', crystal:'shard', uranium:'pellet',
   tin:'flake', aluminum:'nodule', nickel:'disc', tungsten:'heavyblock', platinum:'gem'
 };
-// helper: stroke+fill a path builder with the 3 face colors using a top/left/right split
-function facet(g,C,r,topPts,leftPts,rightPts,lw){
-  g.lineJoin='round';g.lineCap='round';
-  g.strokeStyle=C.line;g.lineWidth=lw;
-  const poly=(pts,fill)=>{g.fillStyle=fill;g.beginPath();
-    pts.forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-    g.closePath();g.fill();g.stroke()};
-  if(rightPts)poly(rightPts,C.darkF);
-  if(leftPts)poly(leftPts,C.side);
-  if(topPts)poly(topPts,C.top);
-}
+// v48 — TOPDOWN FLAT ORE CHUNKS (user: "make sure the ORES FIT THE STYLE of
+// the game — borders, colors, shapes; THIS IS A TOPDOWN GAME"). Every chunk is
+// drawn in the game's object language — the same recipe the item sprites use
+// (plateF/ingotF/wireF): a solid body in the item's color, a crisp dark
+// outline (the border), and one white highlight stroke catching the top-left.
+// The old isometric top/left/right facets and the shadowBlur glow are GONE.
+// Each ore keeps its distinct SILHOUETTE (nugget, cube, prism, shard...) —
+// identity comes from shape + color, never from fake 3D. World veins and item
+// icons both draw through this function, so the style is uniform everywhere.
 function oreChunk(g,cx,cy,r,a,C,shape,glow){
   g.save();g.translate(cx,cy);g.rotate(a);
-  const lw=Math.max(1.2,r*.16);
-  if(glow){g.shadowColor=C.top;g.shadowBlur=r*.6}
+  const lw=Math.max(1.2,r*.15);
+  g.lineJoin='round';g.lineCap='round';
+  const HLW=Math.max(1,r*.09);            // highlight stroke width
+  const HL='rgba(255,255,255,.75)';       // the same white the item sprites use
+  const poly=(pts,close)=>{g.beginPath();
+    pts.forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
+    if(close!==false)g.closePath()};
+  const body=pts=>{poly(pts);g.fillStyle=C.side;g.fill();
+    g.strokeStyle=C.line;g.lineWidth=lw;g.stroke()};
+  const rrBody=(x,y,w,h,rad)=>{g.fillStyle=C.side;rr(g,x*r,y*r,w*r,h*r,rad*r);g.fill();
+    g.strokeStyle=C.line;g.lineWidth=lw;g.stroke()};
+  const hl=pts=>{poly(pts,false);g.strokeStyle=HL;g.lineWidth=HLW;g.stroke()};
+  const hlArc=(x,y,rad,a0,a1)=>{g.strokeStyle=HL;g.lineWidth=HLW;
+    g.beginPath();g.arc(x*r,y*r,rad*r,a0,a1);g.stroke()};
   switch(shape){
-    case'cube': // iron — blocky isometric cube
-      facet(g,C,r,
-        [[0,-.95],[.82,-.5],[0,-.05],[-.82,-.5]],
-        [[-.82,-.5],[0,-.05],[0,.92],[-.82,.55]],
-        [[.82,-.5],[0,-.05],[0,.92],[.82,.55]],lw);
+    case'cube': // iron — crisp rounded square
+      rrBody(-.72,-.72,1.44,1.44,.22);
+      hl([[-.44,-.5],[.18,-.5]]);
       break;
-    case'fatcube': // gold — squat wide cube, bevelled
-      facet(g,C,r,
-        [[0,-.7],[.95,-.42],[0,-.12],[-.95,-.42]],
-        [[-.95,-.42],[0,-.12],[0,.6],[-.95,.3]],
-        [[.95,-.42],[0,-.12],[0,.6],[.95,.3]],lw);
+    case'fatcube': // gold — squat wide slab
+      rrBody(-.86,-.55,1.72,1.1,.26);
+      hl([[-.56,-.32],[.34,-.32]]);
       break;
-    case'prism': // quartz — tall hex prism
-      facet(g,C,r,
-        [[0,-1.25],[.5,-1.0],[0,-.75],[-.5,-1.0]],
-        [[-.5,-1.0],[0,-.75],[0,.95],[-.5,.7]],
-        [[.5,-1.0],[0,-.75],[0,.95],[.5,.7]],lw);
+    case'prism': // quartz — flat hexagon
+      body([[-.5,-.72],[.5,-.72],[.82,-.2],[.5,.72],[-.5,.72],[-.82,-.2]]);
+      hl([[-.42,-.44],[.42,-.44]]);
       break;
-    case'shard': // crystal — tall jagged twin shard
-      facet(g,C,r,
-        [[0,-1.35],[.42,-.55],[0,-.35],[-.42,-.55]],
-        [[-.42,-.55],[0,-.35],[-.12,.95],[-.5,.5]],
-        [[.42,-.55],[0,-.35],[.28,1.05],[.5,.5]],lw);
-      // little secondary spire
-      g.save();g.translate(r*.5,r*.2);g.scale(.5,.5);
-      facet(g,C,r,[[0,-1.35],[.42,-.55],[0,-.35],[-.42,-.55]],
-        [[-.42,-.55],[0,-.35],[-.12,.95],[-.5,.5]],
-        [[.42,-.55],[0,-.35],[.28,1.05],[.5,.5]],lw*1.6);
+    case'shard': // crystal — twin flat kites
+      body([[0,-.95],[.38,-.2],[0,.9],[-.38,-.2]]);
+      g.fillStyle=C.darkF;poly([[0,-.4],[.16,-.1],[0,.35],[-.16,-.1]]);g.fill();
+      g.save();g.translate(r*.42,r*.3);g.scale(.45,.45);
+      poly([[0,-.95],[.38,-.2],[0,.9],[-.38,-.2]]);g.fillStyle=C.side;g.fill();
+      g.strokeStyle=C.line;g.lineWidth=lw*2;g.stroke();
       g.restore();
+      hl([[-.2,-.55],[.14,-.4]]);
       break;
-    case'octa': // silver — diamond octahedron
-      facet(g,C,r,
-        [[0,-1.05],[.7,0],[0,.15],[-.7,0]],
-        [[-.7,0],[0,.15],[0,1.05]],
-        [[.7,0],[0,.15],[0,1.05]],lw);
+    case'octa': // silver — flat diamond
+      body([[0,-.88],[.7,0],[0,.88],[-.7,0]]);
+      hl([[-.34,-.4],[.2,-.18]]);
       break;
-    case'tablet': // lithium — flat rounded tablet (soft mineral)
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      rr(g,-r*.85,-r*.5,r*1.7,r*1.0,r*.35);g.fill();g.stroke();
-      g.fillStyle=C.top;rr(g,-r*.7,-r*.4,r*1.4,r*.4,r*.2);g.fill();
+    case'tablet': // lithium — rounded tablet
+      rrBody(-.85,-.5,1.7,1.0,.3);
+      hl([[-.6,-.26],[.35,-.26]]);
       break;
-    case'bar': // titanium — long bevelled bar
-      facet(g,C,r,
-        [[-.5,-.75],[.95,-.5],[.5,-.2],[-.95,-.45]],
-        [[-.95,-.45],[-.5,-.2],[-.5,.7],[-.95,.45]],
-        [[.5,-.2],[.95,-.5],[.95,.4],[.5,.7]],lw);
-      g.fillStyle=C.top;g.beginPath();
-      [[-.95,-.45],[-.5,-.2],[.5,-.2],[.95,-.5]].forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
+    case'bar': // titanium — long rounded bar
+      rrBody(-.95,-.4,1.9,.8,.22);
+      hl([[-.68,-.18],[.55,-.18]]);
       break;
     case'rubble': // coal — irregular angular lump
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      g.beginPath();
-      [[-.9,-.2],[-.45,-.85],[.35,-.7],[.95,-.05],[.7,.75],[-.25,.9],[-.85,.5]]
-        .forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
-      g.fillStyle=C.top;g.beginPath();
-      [[-.45,-.85],[.35,-.7],[.2,-.1],[-.5,-.15]]
-        .forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
+      body([[-.9,-.2],[-.45,-.85],[.35,-.7],[.95,-.05],[.7,.75],[-.25,.9],[-.85,.5]]);
+      g.fillStyle=C.top;poly([[-.45,-.6],[.3,-.5],[.1,-.05],[-.5,-.1]]);g.fill();
       break;
-    case'pellet': // uranium — rounded glowing pellet with band
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      g.beginPath();g.arc(0,0,r*.85,0,7);g.fill();g.stroke();
-      g.fillStyle=C.top;g.beginPath();g.arc(-r*.22,-r*.26,r*.42,0,7);g.fill();
-      g.strokeStyle=C.darkF;g.lineWidth=lw*.8;
-      g.beginPath();g.ellipse(0,r*.05,r*.85,r*.3,0,.2,Math.PI-.2);g.stroke();
+    case'pellet': // uranium — round pellet, flat
+      g.fillStyle=C.side;g.beginPath();g.arc(0,0,r*.85,0,7);g.fill();
+      g.strokeStyle=C.line;g.lineWidth=lw;g.stroke();
+      hlArc(-.12,-.12,.5,Math.PI*.95,Math.PI*1.45);
+      g.fillStyle=C.top;g.beginPath();g.arc(0,0,r*.22,0,7);g.fill();
       break;
-    case'flake': // tin — thin angular flake/sheet, low and wide
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      g.beginPath();
-      [[-.95,.1],[-.35,-.45],[.55,-.35],[.95,.15],[.4,.55],[-.5,.5]]
-        .forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
-      g.fillStyle=C.top;g.beginPath();
-      [[-.35,-.45],[.55,-.35],[.3,0],[-.5,-.05]]
-        .forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
+    case'flake': // tin — thin wide sheet
+      body([[-.95,.1],[-.35,-.45],[.55,-.35],[.95,.15],[.4,.55],[-.5,.5]]);
+      hl([[-.4,-.28],[.4,-.2]]);
       break;
-    case'nodule': // bauxite — cluster of rounded reddish nodules
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      for(const[ox,oy,rr2] of [[-.4,.2,.6],[.4,.3,.55],[.05,-.4,.62],[.45,-.3,.4]]){
-        g.beginPath();g.arc(ox*r,oy*r,rr2*r*.7,0,7);g.fill();g.stroke();
+    case'nodule': // bauxite — cluster of flat nodules
+      for(const[ox,oy,rr2] of [[-.4,.2,.6],[.4,.3,.55],[.05,-.4,.62]]){
+        g.fillStyle=C.side;g.beginPath();g.arc(ox*r,oy*r,rr2*r*.7,0,7);g.fill();
+        g.strokeStyle=C.line;g.lineWidth=lw*.8;g.stroke();
       }
-      g.fillStyle=C.top;
-      for(const[ox,oy,rr2] of [[-.5,.05,.28],[.0,-.55,.28],[.32,.15,.24]]){
-        g.beginPath();g.arc(ox*r,oy*r,rr2*r,0,7);g.fill();
-      }
+      hlArc(-.45,-.05,.32,Math.PI*.9,Math.PI*1.5);
       break;
-    case'disc': // nickel — coin/disc on edge
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      g.beginPath();g.ellipse(0,r*.15,r*.92,r*.55,0,0,7);g.fill();g.stroke();
-      g.fillStyle=C.top;g.beginPath();g.ellipse(0,-r*.1,r*.92,r*.55,0,0,7);g.fill();g.stroke();
-      g.fillStyle=C.darkF;g.beginPath();g.ellipse(0,-r*.1,r*.5,r*.3,0,0,7);g.fill();
+    case'disc': // nickel — flat coin
+      g.fillStyle=C.side;g.beginPath();g.arc(0,0,r*.85,0,7);g.fill();
+      g.strokeStyle=C.line;g.lineWidth=lw;g.stroke();
+      g.strokeStyle=C.darkF;g.lineWidth=lw*.7;g.beginPath();g.arc(0,0,r*.5,0,7);g.stroke();
+      hlArc(-.1,-.1,.62,Math.PI*.95,Math.PI*1.5);
       break;
-    case'heavyblock': // tungsten — extra-dense chunky block, double-bevelled
-      facet(g,C,r,
-        [[0,-.85],[.9,-.45],[0,-.0],[-.9,-.45]],
-        [[-.9,-.45],[0,0],[0,.95],[-.9,.5]],
-        [[.9,-.45],[0,0],[0,.95],[.9,.5]],lw*1.4);
-      g.strokeStyle=C.line;g.lineWidth=lw*.7;
-      g.beginPath();g.moveTo(0,0);g.lineTo(0,r*.95);g.stroke();
+    case'heavyblock': // tungsten — dense slab with a center seam
+      rrBody(-.8,-.75,1.6,1.5,.16);
+      g.strokeStyle=C.darkF;g.lineWidth=lw*.7;
+      g.beginPath();g.moveTo(0,-.75*r);g.lineTo(0,.75*r);g.stroke();
+      hl([[-.52,-.52],[.2,-.52]]);
       break;
-    case'gem': // platinum — premium faceted gem (many facets, bright)
-      facet(g,C,r,
-        [[0,-1.0],[.55,-.55],[.35,-.1],[-.35,-.1],[-.55,-.55]],
-        [[-.55,-.55],[-.35,-.1],[0,1.0],[-.62,.35]],
-        [[.55,-.55],[.35,-.1],[0,1.0],[.62,.35]],lw);
-      g.strokeStyle=C.top;g.lineWidth=lw*.6;
-      g.beginPath();g.moveTo(-.35*r,-.1*r);g.lineTo(.35*r,-.1*r);g.stroke();
+    case'gem': // platinum — flat faceted gem
+      body([[0,-.9],[.58,-.42],[.4,.12],[0,.9],[-.4,.12],[-.58,-.42]]);
+      g.strokeStyle=C.top;g.lineWidth=HLW;poly([[0,-.9],[0,.9]],false);g.stroke();
+      hl([[-.38,-.5],[.3,-.44]]);
       break;
     default: // copper — rounded faceted nugget
-      g.fillStyle=C.side;g.strokeStyle=C.line;g.lineWidth=lw;
-      g.beginPath();
-      [[0,-.92],[.78,-.55],[.92,.2],[.45,.85],[-.4,.9],[-.9,.25],[-.7,-.55]]
-        .forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
-      g.fillStyle=C.top;g.beginPath();
-      [[0,-.92],[.78,-.55],[.3,-.1],[-.45,-.05],[-.7,-.55]]
-        .forEach((p,i)=>i?g.lineTo(p[0]*r,p[1]*r):g.moveTo(p[0]*r,p[1]*r));
-      g.closePath();g.fill();g.stroke();
+      body([[0,-.92],[.78,-.55],[.92,.2],[.45,.85],[-.4,.9],[-.9,.25],[-.7,-.55]]);
+      hl([[-.5,-.55],[.2,-.68]]);
   }
-  g.shadowBlur=0;
   g.restore();
 }
 
@@ -5696,7 +5667,8 @@ function addPatch(key,size,minX,minY,maxX,maxY){
     // SAND, every other ore starts on non-sand. Without this the single
     // random start pick usually missed the (rare) beach tiles and the whole
     // vein silently failed to spawn.
-    ||(key==='quartz'?!isSandAt(x,y):isSandAt(x,y)))&&guard-->0);
+    // v46 — and never on a CACTUS tile (the plant layer owns that tile).
+    ||(key==='quartz'?(!isSandAt(x,y)||cactusAt(x,y)):isSandAt(x,y)))&&guard-->0);
   if(guard<=0)return false;
   // organic blob growth: keep a frontier of candidate cells, expand outward.
   // Skip water tiles so ore veins don't overlap rivers.
@@ -5705,7 +5677,8 @@ function addPatch(key,size,minX,minY,maxX,maxY){
     // v39/v40 — QUARTZ IS THE BEACH ORE (user: quartz spawns on beaches, NOT
     // in the dirt): quartz veins REQUIRE a sand riverbank, and every other
     // ore skips beach tiles entirely.
-    &&(key==='quartz'?isSandAt(cx,cy):!isSandAt(cx,cy))
+    // v46 — no ore grows onto a CACTUS tile either (plant layer owns it).
+    &&(key==='quartz'?(isSandAt(cx,cy)&&!cactusAt(cx,cy)):!isSandAt(cx,cy))
     &&cx>=minX&&cx<=maxX&&cy>=minY&&cy<=maxY;
   const set=(cx,cy)=>{G.grid[cy][cx].terr=key;G.grid[cy][cx].v=Math.floor(Math.random()*3);G.grid[cy][cx].q=rollQ()};
   if(!free(x,y))return false;
@@ -5889,6 +5862,12 @@ function isWaterAt(x,y){
 // strata sit DIRECTLY on Clay, skipping the Topsoil band (see
 // processExcavator + CLAY_START_DEPTH).
 const SAND_BASE=[218,196,146];      // warm beach tan (flat; sits with the layer palette)
+// v46 — sand/grass mottle+detail pairs: every surface gets EXACTLY the dirt
+// treatment, so sand and grass need their own base/dark pair derived from
+// their fills the same way layer darks derive from layer bases (~80%).
+const SAND_DARK=[174,157,117];      // SAND_BASE x .8 — pebble/mottle dark on sand
+const GRASS_BASE=[138,181,95];      // grass fill (matches the meadow green)
+const GRASS_DARK=[110,145,76];      // grass fill x .8 — pebble/mottle dark on grass
 const SAND_THR=0.54;                // mask threshold — calibrated: bank coverage ~40% (30-50% spec)
 const _sandCache=new Map();
 function _sandMask(x,y){
@@ -5957,6 +5936,12 @@ function isSandAt(x,y){
   }
   _sandCache.set(key,res);
   return res;
+}
+// v46 — does a CACTUS occupy this tile? The exact plant-layer gate
+// drawSandDeco paints with — shared so ore spawning honors it too
+// (user: ORES CANNOT SPAWN ON CACTUS).
+function cactusAt(x,y){
+  return isSandAt(x,y)&&_hash2(x*5+3,y*5+11)<=0.11;
 }
 // v36 — SMOOTH WATER DEPTH FIELD. The water base color used to quantize per
 // tile (depth = integer 8-neighbor water count / 8) with one flat fill per
@@ -6201,24 +6186,25 @@ function paintWater(ctx,x,y,T,time){
   }
   ctx.fillRect(px,py,T,T);
 
-  // === ANIMATED RIPPLES ===
-  // 3 drifting ripple lines — the main animation element. Each has a slightly
-  // different speed and vertical position, creating a gentle layered flow.
-  // Highlight color is warm cream (230,222,200) — matches the game's --cream
-  // palette so the ripples feel like they belong in the world, not pasted on.
+  // v46 — WORLD-SPACE RIPPLES (user: "the water waves do not touch/connected").
+  // Phase and position depend only on WORLD coordinates + time — the segment
+  // a tile draws meets its neighbour's exactly, so wave lines run unbroken
+  // the whole length of the river (the old per-tile hash phase snapped the
+  // line at every tile boundary). Highlight stays warm cream (--cream).
   ctx.lineCap='round';
   for(let i=0;i<3;i++){
-    const yBase=py+T*(0.18+i*0.28);
+    const yBase=(y+0.18+i*0.28)*T;
     const speed=0.2+i*0.08;
-    const phase=t*speed+i*2.0+h*6.283;
+    const phase=t*speed+i*2.0;
     const amp=T*(0.014+0.008*i);
     const opacity=(0.07+depth*0.05)*(1-i*0.2);
     ctx.strokeStyle='rgba(232,224,202,'+opacity+')';
     ctx.lineWidth=T*(0.014+0.002*i);
     ctx.beginPath();
     for(let sx=0;sx<=T;sx+=T*0.08){
-      const wy=yBase+Math.sin(sx*0.22+phase)*amp;
-      if(sx===0)ctx.moveTo(px+sx,wy);else ctx.lineTo(px+sx,wy);
+      const wx=px+sx;
+      const wy=yBase+Math.sin(wx*0.22+phase)*amp+Math.sin(wx*0.05+t*0.1+i)*T*.03;
+      if(sx===0)ctx.moveTo(wx,wy);else ctx.lineTo(wx,wy);
     }
     ctx.stroke();
   }
@@ -6238,24 +6224,11 @@ function paintWater(ctx,x,y,T,time){
     if(W&&W!=='water')ctx.fillRect(px,py,fw,T);
   }
 
-  // === LIGHT SHIMMER ===
-  // One slow-drifting warm light spot on deeper water. Reads as sunlight
-  // hitting the surface — gentle, not flashy. Warm amber tone.
-  if(depth>0.45){
-    const caT=t*0.35+h*3;
-    const lcx=px+T*(0.35+0.25*Math.sin(caT));
-    const lcy=py+T*(0.4+0.2*Math.cos(caT*0.7));
-    const ca=0.03+0.02*Math.sin(t*0.4+h*5);
-    if(ca>0){
-      ctx.globalCompositeOperation='lighter';
-      const cg=ctx.createRadialGradient(lcx,lcy,0,lcx,lcy,T*0.2);
-      cg.addColorStop(0,'rgba(220,205,170,'+ca+')');
-      cg.addColorStop(1,'rgba(220,205,170,0)');
-      ctx.fillStyle=cg;
-      ctx.fillRect(px,py,T,T);
-      ctx.globalCompositeOperation='source-over';
-    }
-  }
+  // v46 — LIGHT SHIMMER REMOVED (user: "the glowball is too obvious and
+  // makes the entire water look like a repeating texture"). The per-tile
+  // radial glow read as one repeated blob stamped on every deep tile; the
+  // river now reads as one continuous surface (world-space ripples + the
+  // occasional tiny sparkle below).
 
   // === OCCASIONAL SPARKLE ===
   // Tiny warm glint that fades in/out — like a sun reflection. Very subtle.
@@ -6524,8 +6497,10 @@ function receiverAt(x,y,d,type){
   // Drills, foreman, workshop, megaDrill never accept items from belts/splitters
   if(nm.type==='drill'||nm.type==='megaDrill'||nm.type==='foreman'||nm.type==='workshop')return false;
   if(nm.type==='excavator')return type==null?true:type==='coal';
-  // v39 — machine under construction still receives (its Builder ingredients)
-  if(nm.construction)return type==null?true:(type in nm.construction.need)&&constructionCovers(nm,nx,ny,type);
+  // v49 — the box COVERS the machine: no direct belt feeds (user — items
+  // enter only through Extender interfaces). The extender branch above is the
+  // one live path into a boxed machine.
+  if(nm.construction)return false;
   if(PROC[nm.type])return type==null?true:!!PROC[nm.type][type];
   if(isAsm(nm))return type==null?true:RECIPES[nm.recipe]&&RECIPES[nm.recipe][type];
   return false;
@@ -6612,40 +6587,30 @@ const UPGRADES={
   assembler: {to:'fabricator',  ingredients:{ironPlate:4,copperWire:4,gear:2,copperCoil:2},     tech:'fabricator'},
   fabricator:{to:'manufacturer',ingredients:{steelPlate:4,motor:2,advCircuit:2,alloyCasing:2}, tech:'manufacturer'}
 };
-const BUILDER_FALL=0.42;     // seconds a crate spends falling onto the machine
+const BUILDER_FALL=0.42;     // seconds the box spends falling onto the machine
 const BUILD_TIME=2600;       // ms of final assembly once every ingredient is delivered
-const BUILDER_CORNERS=[[-1,-1],[1,-1],[1,1],[-1,1]];
+const BOX_OPEN_DUR=1.05;     // v49 — topdown flap-opening animation length (s)
 function upgOf(m){return UPGRADES[m.type]||null}
 function upgUnlocked(m){const u=upgOf(m);return!!(u&&(!u.tech||G.tech.has(u.tech)))}
-// direct Extenders attached to the machine at (x,y)
-function constructionExtCount(x,y){
-  let n=0;
+// v49 — Extenders attached to the box are THE ingredient interfaces (user:
+// "extenders are the interfaces where you put the items into the builder, 1
+// item type per extender"). Each one carries a chosen feedItem (picked in its
+// panel, market-style) and is the ONLY way items enter the boxed machine.
+function constructionExtenders(x,y){
+  const out=[];
   for(const d of DIRS){
     const c=cellAt(x+DV[d].x,y+DV[d].y);
-    if(c&&c.m&&isExtender(c.m)&&c.m.hostDir===OPP[d])n++;
+    if(c&&c.m&&isExtender(c.m)&&c.m.hostDir===OPP[d])out.push(c.m);
   }
-  return n;
+  return out;
 }
-// live ingredient slots = attached builders (+1 if an Extender is attached)
-function constructionSlots(m,x,y){
-  const c=m.construction;if(!c)return 0;
-  return c.builders.length+(constructionExtCount(x,y)>0?1:0);
-}
-// is this ingredient covered by a live slot? (slot i covers ingredient i)
-function constructionCovers(m,x,y,type){
-  const c=m.construction;if(!c||!(type in c.need))return false;
-  return Object.keys(c.need).indexOf(type)<constructionSlots(m,x,y);
-}
-// world-pixel corner position of builder slot idx on the machine tile
-function builderCorner(x,y,idx){
-  const c=center(x,y);
-  const o=BUILDER_CORNERS[((idx%4)+4)%4];
-  return{x:c.x+o[0]*T*.30,y:c.y+o[1]*T*.30};
-}
+function constructionExtCount(x,y){return constructionExtenders(x,y).length}
 function startConstruction(m,x,y){
   const u=upgOf(m);if(!u||m.construction)return false;
   flushMachine(m,x,y);
-  m.construction={to:u.to,need:Object.assign({},u.ingredients),got:{},builders:[],buildT:0,spend:0};
+  // v49 — ONE box covers the machine (no builder-crate array). boxT drives
+  // the fall-in; landed drives the one-shot impact burst.
+  m.construction={to:u.to,need:Object.assign({},u.ingredients),got:{},boxT:G.time,landed:false,buildT:0,spend:0};
   m.state='idle';m.timer=0;m.hold=null;m.arm=0;
   SFX.select();
   const c=center(x,y);
@@ -6655,41 +6620,42 @@ function startConstruction(m,x,y){
   ui();
   return true;
 }
+// v49 — placing the Builder ON a machine starts the upgrade automatically
+// (user: "you automatically start upgrading because you drag the builder on
+// the machine"). Pays for the box, boxes the machine, construction begins.
 function attachBuilder(x,y){
   const cell=cellAt(x,y);if(!cell||!cell.m||cell.ref)return false;
   const m=cell.m;
-  if(!m.construction){
-    const p=center(x,y);
-    if(upgOf(m)){SFX.err();text(p.x,p.y,'open machine - pick upgrade','#e85d4a')}
-    else{SFX.err();text(p.x,p.y,'cannot upgrade','#e85d4a')}
+  if(m.construction){
+    SFX.err();const p=center(x,y);
+    text(p.x,p.y,'one box per site - use Extenders','#e85d4a');
     return false;
   }
-  const c=m.construction;
-  const ings=Object.keys(c.need);
-  if(constructionSlots(m,x,y)>=ings.length){
-    SFX.err();const p=center(x,y);text(p.x,p.y,'all slots filled','#e85d4a');return false;
+  const u=upgOf(m);
+  if(!u){SFX.err();const p=center(x,y);text(p.x,p.y,'cannot upgrade','#e85d4a');return false}
+  if(!upgUnlocked(m)){
+    SFX.err();const p=center(x,y);
+    const tn=(TECHS.find(t=>t.id===u.tech)||{name:u.tech}).name;
+    text(p.x,p.y,'research '+tn+' first','#e85d4a');
+    return false;
   }
   const price=priceOf('builder');
   if(G.money<price){SFX.err();const p=center(x,y);text(p.x,p.y,'Need $'+fmt(price),'#e85d4a');return false}
   G.money-=price;
-  c.spend+=price;
-  const idx=c.builders.length;
-  c.builders.push({idx,item:ings[idx],land:G.time,impacted:false});
-  SFX.belt();
-  ui();
+  if(!startConstruction(m,x,y))return false;
+  m.construction.spend=price;
   return true;
 }
 function updConstruction(m,x,y,dt){
   const c=m.construction;if(!c)return;
-  for(const b of c.builders){
-    if(!b.impacted&&G.time-b.land>=BUILDER_FALL){
-      b.impacted=true;
-      const p=builderCorner(x,y,b.idx);
-      burst(p.x,p.y+T*.06,'#c9a468',6,'shard');
-      pulse(p.x,p.y,'rgba(201,154,91,.85)',T*.05,T*.3,.3,2);
-      SFX.place();
-      if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
-    }
+  // one-shot box landing impact
+  if(!c.landed&&G.time-c.boxT>=BUILDER_FALL){
+    c.landed=true;
+    const p=center(x,y);
+    burst(p.x,p.y+T*.14,'#c9a468',8,'shard');
+    pulse(p.x,p.y,'rgba(201,154,91,.85)',T*.05,T*.4,.3,2);
+    SFX.place();
+    if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
   }
   let all=true;
   for(const k in c.need)if((c.got[k]||0)<c.need[k]){all=false;break}
@@ -6706,7 +6672,10 @@ function finishUpgrade(m,x,y){
   m.construction=null;
   m.type=to;m.recipe=null;m.alloy=null;m.state='idle';m.timer=0;m.hold=null;
   m.inQ.length=0;m.outQ.length=0;m.buf={};m.pipeStage=0;m.pipeItem=null;m.pipeTimer=0;m.pop=1.6;
+  m.boxOpen=G.time;   // v49 — the box OPENS: topdown flap animation over the new machine
   const p=center(x,y);
+  sparkle(p.x-T*.15,p.y-T*.1,'#ffd27a',3);
+  sparkle(p.x+T*.17,p.y+T*.05,'#ffd27a',3);
   burst(p.x,p.y,HOST_COLORS[to]||'#e8a05d',14,'spark');
   pulse(p.x,p.y,'rgba(255,210,122,.9)',T*.2,T*.95,.6,4);
   text(p.x,p.y-T*.26,(TOOLS[to].name||to).toUpperCase()+' ONLINE','#ffc857');
@@ -6772,19 +6741,25 @@ function canAccept(x,y,type){
   // enter the extender only if the host can accept it via its normal input
   // rules. This is what lets an assembler with 4 ingredients accept from
   // 4 belts — each belt (some via extenders) feeds a different ingredient.
+  // v49 — an extender on a BUILDER BOX is an ingredient interface: it accepts
+  // exactly ONE chosen ingredient (feedItem, picked in its panel like the
+  // market) and only while the box still needs it.
   if(isExtender(m)){
     const host=extenderHost(x,y,m);
     if(!host)return false;
+    const hm=host.m;
+    if(hm.construction){
+      const cc=hm.construction;
+      if(type==null)return true;
+      return m.feedItem===type&&(type in cc.need)&&(cc.got[type]||0)<cc.need[type];
+    }
     // delegate to the host's canAccept at the host's coordinates
     return canAccept(host.hx,host.hy,type);
   }
   if(m.type==='excavator')return type==null?true:type==='coal';
-  // v39 — construction site: accepts only assigned, still-needed ingredients
-  if(m.construction){
-    if(type==null)return true;
-    const c=m.construction;
-    return(type in c.need)&&(c.got[type]||0)<c.need[type]&&constructionCovers(m,x,y,type);
-  }
+  // v49 — construction site: accepts NOTHING directly (the box is covered;
+  // Extender interfaces are the only way in).
+  if(m.construction)return false;
   if(smelterAlloy(m))return needsAlloy(m,type);
   if(PROC[m.type])return!!PROC[m.type][type]&&m.inQ.length<qCap(m.type);
   if(isAsm(m))return needs(m,type);
@@ -6830,20 +6805,25 @@ function deliver(x,y,mdir,type){
   if(m.type==='seller'){sellItem(x,y,type);return true}
   // EXTENDER: forward the delivered item to the host machine's input queue.
   // The host's normal deliver() logic handles the actual buffering (inQ/buf).
+  // v49 — construction interface: credit the chosen ingredient directly.
   if(isExtender(m)){
     const host=extenderHost(x,y,m);
     if(!host)return false;
+    const hm=host.m;
+    if(hm.construction){
+      const cc=hm.construction;
+      const ft=m.feedItem;
+      if(!ft||!(ft in cc.need)||(cc.got[ft]||0)>=cc.need[ft])return false;
+      cc.got[ft]=(cc.got[ft]||0)+1;
+      cc.flashK=ft;cc.flashT=G.time;   // delivery flash on the box pip
+      SFX.feed();
+      if(G.sel)refreshUp();
+      return true;
+    }
     return deliver(host.hx,host.hy,OPP[m.hostDir],type);
   }
-  // v39 — construction site intake: fed ingredients count toward the upgrade
-  if(m.construction){
-    const c=m.construction;
-    if(!(type in c.need)||(c.got[type]||0)>=c.need[type])return false;
-    if(!constructionCovers(m,x,y,type))return false;
-    c.got[type]=(c.got[type]||0)+1;SFX.feed();
-    if(G.sel)refreshUp();
-    return true;
-  }
+  // v49 — construction site intake: NOTHING enters the box directly.
+  if(m.construction)return false;
   if(smelterAlloy(m)){
     if(!needsAlloy(m,type))return false;
     m.buf[type]=(m.buf[type]||0)+1;SFX.feed();
@@ -6944,8 +6924,16 @@ function processExcavator(m,x,y,dt){
       m.coalProgress-=EXCAVATOR_COAL_PER_BLOCK;
       const radMax=G.mods.excavatorRadiusMax||0;
       const rad=Math.min(m.radius??0, radMax);
-      // Mine all blocks in radius + destroy buildings (except bridges) + reveal ores
       const c=center(x,y);
+      // v47 — FLAT EXCAVATION (user: "it should reduce the highest layer tile
+      // by 1, which means that it reduces every tile to the same layer as the
+      // lowest one before they dig, like a 9x9 area"). Pass 1 collects the
+      // diggable tiles and finds the SHALLOWEST depth in the bore; pass 2 steps
+      // ONLY the tiles sitting at that depth down one layer. Deeper tiles wait
+      // their turn — over repeated digs the floor converges level, and once
+      // level the whole floor steps down together. A flat pit at every size.
+      const tiles=[];
+      let minDepth=Infinity;
       for(let dy=-rad;dy<=rad;dy++)for(let dx=-rad;dx<=rad;dx++){
         const mx=x+dx,my=y+dy;
         // Skip water tiles — excavator can't dig rivers/lakes
@@ -6953,15 +6941,23 @@ function processExcavator(m,x,y,dt){
         let mc=cellAt(mx,my);
         if(!mc)continue;
         if(mc.virtual)mc=offCellCreate(mx,my);
-        // === DESTROY BUILDINGS IN RADIUS === (bridges survive)
+        const d0=mc.depth||1;
+        if(d0>=LAYERS.length)continue;          // bedrock floor — undiggable, never gates the minimum
+        if(d0<minDepth)minDepth=d0;
+        tiles.push({mx,my,mc,dx,dy});
+      }
+      for(const t of tiles){
+        if((t.mc.depth||1)!==minDepth)continue;  // only the highest layer steps this dig
+        const mx=t.mx,my=t.my,mc=t.mc;
+        // === DESTROY BUILDINGS ON THE STEPPED TILES === (bridges survive)
         if(mc.m && mc.m.type!=='bridge' && mc.m.type!=='excavator'){
-          const t=mc.m.type;
-          if(TOOLS[t]&&UP[t]){
+          const btd=mc.m.type;
+          if(TOOLS[btd]&&UP[btd]){
             const refund=Math.round((mc.m.invested||0)*0.8);
             if(refund>0)G.money+=refund
           }
           mc.m=null;
-          burst(c.x+dx*T,c.y+dy*T,'#c46a3a',5,'shard');
+          burst(c.x+t.dx*T,c.y+t.dy*T,'#c46a3a',5,'shard');
         }
         // === DIG + REVEAL ORES ===
         const depth=mc.depth||1;
@@ -8774,6 +8770,16 @@ function drawExtender(g,x,y,px,py,s,m,time){
   g.arc(0, 0, s*.022, 0, Math.PI*2); g.fill();
   g.restore();
 
+  // v49 — construction interface: show WHICH ingredient this extender feeds
+  // (a white item badge ringed in the host color, like the trader's recipe
+  // badge). Unpicked interfaces stay bare — pick one in the extender's panel.
+  if(m.feedItem&&host&&host.m&&host.m.construction&&itemSpr[m.feedItem]){
+    g.fillStyle='#fff';
+    g.beginPath();g.arc(cx,cy,s*.17,0,7);g.fill();
+    g.strokeStyle=hostCol;g.lineWidth=Math.max(1.5,s*.022);
+    g.beginPath();g.arc(cx,cy,s*.17,0,7);g.stroke();
+    g.drawImage(itemSpr[m.feedItem],cx-s*.12,cy-s*.12,s*.24,s*.24);
+  }
   // Connector cable — a short thick line from the body's host-facing edge to
   // the tile boundary, in the host color. This is what makes the extender
   // visibly "plugged into" the host machine.
@@ -8848,37 +8854,35 @@ function drawFurnace(g,px,py,s,m,time){
 // flaps and reinforced edges. Copper strapping tape, metal corner brackets,
 // a small hazard chip and a shipping label carry the "construction delivery"
 // identity. Everything is flat + chunky to sit beside the machine family.
-function drawBuilderCrate(g,cx,cy,sz,dy,rot,sq,det){   // det=false → LOD silhouette
-  // ground shadow — stays put while the crate falls from above
-  g.fillStyle='rgba(60,50,32,.22)';
-  rr(g,cx-sz*.44,cy-sz*.34,sz*.88,sz*.78,sz*.10);g.fill();
-  g.save();
-  g.translate(cx,cy+(dy||0));
-  if(rot)g.rotate(rot);
-  const sqy=sq||1,sqx=2-sqy;      // squash trades height for width on impact
-  g.scale(sqx,sqy);
-  const B=sz*.86,x=-B/2,y=-B/2;
-  // cardboard body
-  g.fillStyle='#c99a5b';
-  rr(g,x,y,B,B,sz*.09);g.fill();
-  // reinforced edge stroke
-  g.strokeStyle='#8a6234';g.lineWidth=Math.max(1,sz*.045);
-  rr(g,x+sz*.035,y+sz*.035,B-sz*.07,B-sz*.07,sz*.06);g.stroke();
-  // top flaps: center seam (+ fold marks when large on screen)
-  g.lineWidth=Math.max(1,sz*.035);
-  g.beginPath();g.moveTo(0,y+sz*.06);g.lineTo(0,y+B-sz*.06);g.stroke();
-  if(det!==false){g.beginPath();
-    g.moveTo(-sz*.05,y+sz*.10);g.lineTo(0,y+sz*.16);g.moveTo(sz*.05,y+sz*.10);g.lineTo(0,y+sz*.16);
-    g.moveTo(-sz*.05,y+B-sz*.10);g.lineTo(0,y+B-sz*.16);g.moveTo(sz*.05,y+B-sz*.10);g.lineTo(0,y+B-sz*.16);
-    g.stroke();}
-  // copper strapping tape across the middle (over the seam)
+// v49 — THE BUILDER BOX SPRITE, styled EXACTLY like a machine (user: "THE
+// BOX/BUILDER SHOULD STYLE EXACTLY LIKE A MACHINE — reference literally every
+// other machine besides the excavator"). Same bld() base every machine uses
+// (soft drop shadow, rounded body, top-light strip, bottom shade) in the
+// Builder tan. The box identity rides ON the machine body: flap seam + fold
+// marks, copper strap, steel corner brackets, hazard chip, shipping label.
+// CLOSED — no arms, no open panels, no construction state.
+function drawBuilderBox(g,cx,cy,sz,det){
+  const px=cx-sz/2,py=cy-sz/2;
+  bld(g,px,py,sz,HOST_COLORS.builder);
+  const B=sz*.76,x=px+sz*.12,y=py+sz*.12;   // bld's body rect
+  // top flap seam (vertical center line) + fold marks
+  g.strokeStyle='#8a6234';g.lineWidth=Math.max(1,sz*.04);g.lineCap='round';
+  g.beginPath();g.moveTo(cx,y+sz*.07);g.lineTo(cx,y+B-sz*.07);g.stroke();
+  if(det!==false){
+    g.lineWidth=Math.max(1,sz*.03);
+    g.beginPath();
+    g.moveTo(cx-sz*.055,y+sz*.11);g.lineTo(cx,y+sz*.17);g.moveTo(cx+sz*.055,y+sz*.11);g.lineTo(cx,y+sz*.17);
+    g.moveTo(cx-sz*.055,y+B-sz*.11);g.lineTo(cx,y+B-sz*.17);g.moveTo(cx+sz*.055,y+B-sz*.11);g.lineTo(cx,y+B-sz*.17);
+    g.stroke();
+  }
+  // copper strap across the middle (over the seam)
   g.fillStyle='#d9824a';
-  g.fillRect(x+sz*.02,-sz*.075,B-sz*.04,sz*.15);
+  g.fillRect(cx-B/2-sz*.01,cy-sz*.075,B+sz*.02,sz*.15);
   g.fillStyle='rgba(0,0,0,.14)';
-  g.fillRect(x+sz*.02,-sz*.075,B-sz*.04,sz*.028);
-  g.fillRect(x+sz*.02,sz*.047,B-sz*.04,sz*.028);
-  // metal corner brackets (+ bolts when large on screen)
-  const bo=sz*.055,bw=sz*.16,bt=sz*.05;
+  g.fillRect(cx-B/2-sz*.01,cy-sz*.075,B+sz*.02,sz*.026);
+  g.fillRect(cx-B/2-sz*.01,cy+sz*.049,B+sz*.02,sz*.026);
+  // steel corner brackets (+ bolts)
+  const bw=sz*.15,bt=sz*.045;
   for(const[qx,qy]of[[-1,-1],[1,-1],[1,1],[-1,1]]){
     const px2=qx>0?x+B-bw:x,py2=qy>0?y+B-bt:y;
     g.fillStyle='#9aa4b0';
@@ -8886,98 +8890,98 @@ function drawBuilderCrate(g,cx,cy,sz,dy,rot,sq,det){   // det=false → LOD silh
     g.fillRect(qx>0?x+B-bt:x,qy>0?y+B-bw:y,bt,bw);
     if(det!==false){
       g.fillStyle='#3a3f4a';
-      g.beginPath();g.arc(px2+bw*.5,py2+bt*.5,Math.max(.6,sz*.022),0,7);g.fill();
+      g.beginPath();g.arc(px2+bw*.5,py2+bt*.5,Math.max(.6,sz*.02),0,7);g.fill();
     }
   }
   if(det!==false){
     // hazard-stripe chip (top-left, diagonal stripes clipped to the chip)
-    const hx=x+sz*.12,hy=y+sz*.12,hw=sz*.17;
+    const hx=x+sz*.09,hy=y+sz*.22,hw=sz*.16;
     g.save();
-    g.beginPath();rr(g,hx,hy,hw,hw,sz*.03);g.clip();
+    g.beginPath();rr(g,hx,hy,hw,hw,sz*.028);g.clip();
     g.translate(hx+hw/2,hy+hw/2);g.rotate(-.6);
     g.fillStyle='#3a3a40';g.fillRect(-hw,-hw,hw*2,hw*2);
     g.fillStyle='#e8862e';
-    for(let i=-3;i<=3;i++)g.fillRect(i*sz*.075-sz*.016,-hw,sz*.033,hw*2);
+    for(let i=-3;i<=3;i++)g.fillRect(i*sz*.07-sz*.015,-hw,sz*.03,hw*2);
     g.restore();
-    // shipping label (bottom-right): cream tag with address lines
+    // shipping label (bottom-right)
     g.fillStyle='#f4ecd6';
-    rr(g,x+B-sz*.30,y+B-sz*.26,sz*.22,sz*.17,sz*.02);g.fill();
+    rr(g,x+B-sz*.28,y+B-sz*.25,sz*.21,sz*.16,sz*.02);g.fill();
     g.fillStyle='#8a7a5a';
-    g.fillRect(x+B-sz*.26,y+B-sz*.215,sz*.14,sz*.022);
-    g.fillRect(x+B-sz*.26,y+B-sz*.175,sz*.10,sz*.022);
+    g.fillRect(x+B-sz*.245,y+B-sz*.205,sz*.135,sz*.02);
+    g.fillRect(x+B-sz*.245,y+B-sz*.165,sz*.095,sz*.02);
     g.fillStyle='#d9824a';
-    g.fillRect(x+B-sz*.26,y+B-sz*.135,sz*.06,sz*.03);
-    // folded tool-arm hint along the left edge (subtle)
-    g.fillStyle='#6c7480';
-    rr(g,x+sz*.055,-sz*.045,sz*.16,sz*.05,sz*.02);g.fill();
-    g.fillStyle='#d9824a';
-    g.beginPath();g.arc(x+sz*.085,0,Math.max(.8,sz*.03),0,7);g.fill();
+    g.fillRect(x+B-sz*.245,y+B-sz*.125,sz*.055,sz*.028);
   }
-  g.restore();
 }
-// screen-pixel corner position of builder slot idx (px,py = tile origin, s = tile px)
-function builderCornerPx(px,py,s,idx){
-  const o=BUILDER_CORNERS[((idx%4)+4)%4];
-  return{x:px+s/2+o[0]*s*.30,y:py+s/2+o[1]*s*.30};
-}
-// v39 — construction-site overlay drawn on top of the host machine:
-// falling/settled crates with ingredient badges, extender bonus slot marker,
-// ingredient pips, and the feed/assembly progress bar.
-function drawConstructionSite(g,x,y,px,py,s,m,time){
+// v49 — THE BOX THAT COVERS THE MACHINE (user: "the box is the only thing you
+// see, you don't see the assembler underneath"). One full-tile machine-styled
+// box replaces the old corner crates: falls in from placement, squash-impacts,
+// then sits closed over the machine. Final assembly shows as the standard
+// machine progress ring.
+function drawConstructionBox(g,px,py,s,m,time){
   const c=m.construction;if(!c)return;
-  const cx=px+s/2,cy=py+s/2;
+  const det=T*G.cam.zoom>100;   // LOD: chip/label/bolts only when close
+  const t=c.boxT!==undefined?G.time-c.boxT:1e9;
+  let dy=0,sq=1;
+  if(t<BUILDER_FALL){
+    const f=Math.max(t,0)/BUILDER_FALL;
+    dy=-(1-f*f)*s*2.1;
+    // landing shadow grows under the falling box
+    g.fillStyle='rgba(60,50,32,.22)';
+    rr(g,px+s*.2,py+s*.26,s*.6,s*.56,s*.16);g.fill();
+  }else if(t<BUILDER_FALL+.18){
+    const it=(t-BUILDER_FALL)/.18;
+    sq=1-.16*Math.sin(it*Math.PI);
+  }
+  g.save();
+  g.translate(px+s/2,py+s/2+dy);
+  const sqy=sq,sqx=2-sq;
+  g.scale(sqx,sqy);
+  drawBuilderBox(g,0,0,s,det);
+  g.restore();
+  // final-assembly progress ring — the machine-family read for "working"
+  let gotAll=0,needAll=0;
+  for(const k in c.need){gotAll+=Math.min(c.got[k]||0,c.need[k]);needAll+=c.need[k]}
+  if(needAll>0&&gotAll>=needAll){
+    ring(g,px+s/2,py+s/2,s*.30,Math.min(c.buildT/BUILD_TIME,1),'rgba(255,255,255,.95)',s*.034);
+  }
+}
+// v49 — the box's own UI, drawn on/around the COVERED box: ingredient pips
+// under the bottom edge (extender-wired = white ring + fill sweep; delivery
+// makes the pip pop) and the feed/assembly bar along the top of the body.
+function drawConstructionSiteUI(g,x,y,px,py,s,m,time){
+  const c=m.construction;if(!c)return;
+  const cx=px+s/2;
   const ings=Object.keys(c.need);
-  const slots=constructionSlots(m,x,y);
-  const det=T*G.cam.zoom>100;   // LOD: crate fine details + badges only when close
-  // 1) attached builder crates (fall-in + impact squash while landing)
-  for(const b of c.builders){
-    const p=builderCornerPx(px,py,s,b.idx);
-    const t=G.time-b.land;
-    if(t<BUILDER_FALL){
-      const f=Math.max(t,0)/BUILDER_FALL;
-      drawBuilderCrate(g,p.x,p.y,s*.42,-(1-f*f)*s*2.1,(1-f)*.12,1,det);
-    }else{
-      const it=Math.min((t-BUILDER_FALL)/.18,1);
-      drawBuilderCrate(g,p.x,p.y,s*.42,0,0,it<1?1-.16*Math.sin(it*Math.PI):1,det);
-    }
-    // ingredient badge — the item this crate feeds
-    if(det&&itemSpr[b.item]){
-      g.fillStyle='#fff';
-      g.beginPath();g.arc(p.x+s*.14,p.y+s*.16,s*.115,0,7);g.fill();
-      g.drawImage(itemSpr[b.item],p.x+s*.14-s*.08,p.y+s*.16-s*.08,s*.16,s*.16);
-    }
-  }
-  // 2) extender bonus slot marker (first attached Extender = +1 slot)
-  if(constructionExtCount(x,y)>0&&c.builders.length<ings.length){
-    const p=builderCornerPx(px,py,s,c.builders.length);
-    g.strokeStyle='#d9824a';g.lineWidth=Math.max(1,s*.035);
-    g.setLineDash([s*.07,s*.05]);
-    rr(g,p.x-s*.21,p.y-s*.21,s*.42,s*.42,s*.06);g.stroke();
-    g.setLineDash([]);
-    g.fillStyle='#d9824a';
-    g.font=`700 ${s*.22}px "Chakra Petch",sans-serif`;
-    g.textAlign='center';g.textBaseline='middle';
-    g.fillText('+',p.x,p.y+s*.01);
-  }
-  // 3) ingredient pips along the bottom: full ring = slot live, dot fill = delivered
+  const exts=constructionExtenders(x,y);
+  const covered=k=>exts.some(e=>e.feedItem===k);
+  // ingredient pips — bottom edge (queue-dot language)
   const n=ings.length;
-  const step=s*.72/Math.max(n,1);
+  const step=Math.min(s*.19,s*.72/Math.max(n,1));
+  const x0=cx-(n-1)*step/2;
   for(let i=0;i<n;i++){
     const k=ings[i],needN=c.need[k],gotN=Math.min(c.got[k]||0,needN);
-    const ix=cx-(n-1)*step/2+i*step,iy=py+s*.905;
-    const cov=i<slots;
+    const ix=x0+i*step,iy=py+s*.945;
+    const cov=covered(k);
+    // delivery flash — the pip that just received pops
+    const fl=(c.flashK===k&&G.time-(c.flashT||0)<.3)?1+.4*(1-(G.time-c.flashT)/.3):1;
+    const pr=s*.052*fl;
     g.fillStyle=cov?'#fff':'rgba(255,255,255,.4)';
-    g.beginPath();g.arc(ix,iy,s*.05,0,7);g.fill();
-    g.fillStyle=cov?(gotN>=needN?'#9fd45e':ITEMS[k].col):'rgba(0,0,0,.15)';
-    g.beginPath();g.arc(ix,iy,s*.034,0,7);g.fill();
+    g.beginPath();g.arc(ix,iy,pr,0,7);g.fill();
+    if(cov&&gotN>0){
+      g.fillStyle=gotN>=needN?'#9fd45e':ITEMS[k].col;
+      g.beginPath();g.moveTo(ix,iy);
+      g.arc(ix,iy,pr*.68,-Math.PI/2,-Math.PI/2+(gotN/needN)*Math.PI*2);
+      g.closePath();g.fill();
+    }
   }
-  // 4) progress bar — feed % in copper, final assembly in amber
+  // progress bar — feed % in copper, final assembly in amber with a glint
   let gotAll=0,needAll=0;
   for(const k of ings){gotAll+=Math.min(c.got[k]||0,c.need[k]);needAll+=c.need[k]}
   const all=needAll>0&&gotAll>=needAll;
   const p2=all?Math.min(c.buildT/BUILD_TIME,1):gotAll/Math.max(needAll,1);
-  const bw=s*.62,bh=Math.max(3,s*.075);
-  const bx=cx-bw/2,by=cy-s*.30;
+  const bw=s*.56,bh=Math.max(3,s*.07);
+  const bx=cx-bw/2,by=py+s*.245;
   g.fillStyle='rgba(35,28,18,.55)';
   rr(g,bx-1.5,by-1.5,bw+3,bh+3,bh/2);g.fill();
   g.fillStyle='rgba(255,255,255,.16)';
@@ -8986,6 +8990,72 @@ function drawConstructionSite(g,x,y,px,py,s,m,time){
   if(p2>0){rr(g,bx,by,Math.max(bh,p2*bw),bh,bh/2);g.fill()}
   if(all){g.fillStyle=`rgba(255,235,180,${.4+.4*Math.sin(time*10)})`;
     rr(g,bx+p2*bw-bh*.5,by,bh,bh,bh/2);g.fill()}
+}
+// v49 — TOPDOWN BOX-OPENING (user: "THIS IS A TOPDOWN GAME. We need a topdown
+// animation of a box opening that looks gorgeous, we can't settle for a
+// cheap-feeling animation"). Plays over the freshly-upgraded machine after
+// finishUpgrade: four flaps hinge on the box rim and swing flat outward with a
+// back-out overshoot; warm light grows in the widening gap, crests, and fades;
+// the rim frame dissolves as the machine's placement pop settles. No
+// shadowBlur — layered flat ellipses only.
+function drawBoxOpening(g,px,py,s,m,time){
+  const t=(G.time-m.boxOpen)/BOX_OPEN_DUR;
+  if(t<0||t>=1)return;
+  const cx=px+s/2,cy=py+s/2;
+  const bx0=px+s*.14,bx1=px+s*.86,by0=py+s*.14,by1=py+s*.86;
+  const L=(by1-by0)/2;
+  // flap progress with back-out ease (overshoot past flat, then settle)
+  const ft=Math.min(Math.max((t-.06)/.5,0),1);
+  const c1=1.70158,c3=c1+1;
+  const eb=x=>1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2);
+  const theta=eb(ft)*1.75;
+  const co=Math.cos(theta);
+  const fade=t>.72?Math.max(0,1-(t-.72)/.28):1;
+  // 1) light from inside — grows with the opening, crests, fades
+  const lightP=Math.min(Math.max((t-.1)/.45,0),1);
+  const crest=Math.max(0,lightP<1?lightP:1-(t-.55)/.45);
+  if(crest>0){
+    const lr=s*(.14+.30*lightP);
+    g.save();
+    g.globalAlpha=.8*crest*fade;
+    g.fillStyle=`rgba(255,235,180,1)`;
+    g.beginPath();g.ellipse(cx,cy,lr,lr*.8,0,0,7);g.fill();
+    g.globalAlpha=.4*crest*fade;
+    g.fillStyle=`rgba(255,210,122,1)`;
+    g.beginPath();g.ellipse(cx,cy,lr*1.55,lr*1.25,0,0,7);g.fill();
+    g.restore();
+  }
+  // 2) the box rim — a frame that dissolves with the flaps
+  g.save();
+  g.globalAlpha=.9*fade;
+  g.strokeStyle='#8a6234';g.lineWidth=Math.max(1.5,s*.035);
+  rr(g,bx0,by0,bx1-bx0,by1-by0,s*.09);g.stroke();
+  g.restore();
+  // 3) the four flaps — hinge on the rim, foreshorten to nothing at 90°,
+  //    reappear OUTSIDE the rim lying flat (underside up)
+  g.save();
+  g.globalAlpha=.96*fade;
+  g.lineJoin='round';
+  const flap=(hx0,hy0,hx1,hy1,nx,ny)=>{
+    const len=L*Math.abs(co);
+    const ox=nx*len,oy=ny*len;
+    g.fillStyle=co>=0?HOST_COLORS.builder:'#8a6234';
+    g.strokeStyle='#8a6234';g.lineWidth=Math.max(1,s*.022);
+    g.beginPath();
+    if(co>=0){
+      g.moveTo(hx0,hy0);g.lineTo(hx1,hy1);
+      g.lineTo(hx1+ox,hy1+oy);g.lineTo(hx0+ox,hy0+oy);
+    }else{
+      g.moveTo(hx0,hy0);g.lineTo(hx1,hy1);
+      g.lineTo(hx1-ox,hy1-oy);g.lineTo(hx0-ox,hy0-oy);
+    }
+    g.closePath();g.fill();g.stroke();
+  };
+  flap(bx0,by0,bx1,by0,0,1);      // N — folds down over the top
+  flap(bx0,by1,bx1,by1,0,-1);     // S
+  flap(bx0,by0,bx0,by1,1,0);      // W
+  flap(bx1,by0,bx1,by1,-1,0);     // E
+  g.restore();
 }
 function drawMachine(g,x,y,px,py,s,m,time,cell){
   const W=(m.w||1)*s, H=(m.h||1)*s, cx=px+W/2, cy=py+H/2;
@@ -9025,6 +9095,15 @@ function drawMachine(g,x,y,px,py,s,m,time,cell){
     rr(g,px+s*.06,py+s*.06,W-s*.12,H-s*.12,s*.26);g.fill();
     g.restore();
   }
+  // v49 — A MACHINE UNDER CONSTRUCTION IS COVERED BY THE BUILDER BOX (user:
+  // "the box is the only thing you see, you don't see the assembler
+  // underneath"). The machine sprite never draws while boxed.
+  if(m.construction){
+    drawConstructionBox(g,px,py,s,m,time);
+    drawConstructionSiteUI(g,x,y,px,py,s,m,time);
+    if(cineSaved)g.restore();
+    return;
+  }
   // transform: placement pop + gentle idle breathing for producers
   let k=1;
   if(m.pop>0)k*=1+Math.sin(Math.min(m.pop,1.5)*Math.PI)*.1;
@@ -9055,10 +9134,11 @@ function drawMachine(g,x,y,px,py,s,m,time,cell){
     case'extender':drawExtender(g,x,y,px,py,s,m,time);break;
     case'furnace':drawFurnace(g,px,py,s,m,time);break;
     case'manufacturer':drawAssembler(g,px,py,s,m,time,MAN_PAL);break;
-    case'builder':drawBuilderCrate(g,px+s/2,py+s/2,s*.86,0,0,1);break;
+    case'builder':drawBuilderBox(g,px+s/2,py+s/2,s*.86);break;
   }
-  // v39 — construction site overlay (crates, badges, pips, progress) on top
-  if(m.construction)drawConstructionSite(g,x,y,px,py,s,m,time);
+  // v49 — after the upgrade completes the box OPENS: the topdown flap
+  // animation plays over the freshly revealed machine.
+  if(m.boxOpen&&G.time-m.boxOpen<BOX_OPEN_DUR)drawBoxOpening(g,px,py,s,m,time);
   if(transformed)g.restore();
   if(cineSaved)g.restore();
 }
@@ -9127,15 +9207,20 @@ function drawTerrainMottle(ctx,bx0,by0,bx1,by1){
       let depth=0;
       if(x>=0&&x<G.N&&y>=0&&y<G.N){depth=G.grid[y][x].depth||1}
       else{const oc=G._offGrid&&G._offGrid.get(offKey(x,y));depth=oc?(oc.depth||0):0}
-      if(!depth||isWaterAt(x,y))continue;
-      if(depth<2&&isSandAt(x,y))continue;      // v38 — sand: no layer mottle
-      const li=layerInfoAt(depth);if(!li)continue;
+      if(isWaterAt(x,y))continue;
+      // v46 — ONE mottle language for EVERY surface (user: grass, sand and
+      // every layer get EXACTLY the dirt detail, not more, not less).
+      const sandSurf=depth<2&&isSandAt(x,y);
+      let mB,mD;
+      if(sandSurf){mB=SAND_BASE;mD=SAND_DARK}
+      else if(!depth){mB=GRASS_BASE;mD=GRASS_DARK}
+      else{const li=layerInfoAt(depth);if(!li)continue;mB=li.type.base;mD=li.type.dark}
       const h=_hash2(x*5+101,y*5+57);
       if(h<.35)continue;
       const cx2=(x+.5)*T+((h*7)%1-.5)*T*1.2;
       const cy2=(y+.5)*T+(((h*11)%1)-.5)*T*1.2;
       const rx=T*(1.1+((h*13)%1)*.7);
-      ctx.fillStyle=terrCol(h>.62?li.type.base:li.type.dark);
+      ctx.fillStyle=terrCol(h>.62?mB:mD);
       ctx.globalAlpha=.055;
       ctx.beginPath();ctx.ellipse(cx2,cy2,rx,rx*.72,h*3,0,7);ctx.fill();
       ctx.globalAlpha=.045;
@@ -9150,16 +9235,22 @@ function drawTerrainDetail(ctx,bx0,by0,bx1,by1){
     let depth=0;
     if(x>=0&&x<G.N&&y>=0&&y<G.N){depth=G.grid[y][x].depth||1}
     else{const oc=G._offGrid&&G._offGrid.get(offKey(x,y));depth=oc?(oc.depth||0):0}
-    if(!depth)continue;                 // grass — drawGrassDeco owns it
     if(isWaterAt(x,y))continue;         // water — own animated painter
-    if(depth<2&&isSandAt(x,y))continue; // v38 — sand stays flat-clean (no layer marks)
-    const li=layerInfoAt(depth);if(!li)continue;
-    const lt=li.name.toLowerCase();
-    const LD=li.type.dark, LB=li.type.base;
+    // v46 — ONE detail language for EVERY surface (user: grass, sand and
+    // every other layer EXACTLY the same detail as dirt, NOT MORE NOT LESS).
+    // The dirt treatment (1-3 pebbles + an optional curved soil mark, drawn
+    // in the surface's dark hue) now paints on grass, sand, and every layer.
+    // The old per-layer variants (stone cracks, bedrock shards, mantle
+    // pulses) are gone — uniform detail, only the hue pair changes.
+    const sandSurf=depth<2&&isSandAt(x,y);
+    let LD,LB;
+    if(sandSurf){LD=SAND_DARK;LB=SAND_BASE}
+    else if(!depth){LD=GRASS_DARK;LB=GRASS_BASE}
+    else{const li=layerInfoAt(depth);if(!li)continue;LD=li.type.dark;LB=li.type.base}
     const h=_hash2(x*7+3,y*7+11);
     const h2=_hash2(x*13+5,y*13+2);
     const px=x*T,py=y*T;
-    if(lt==='topsoil'||lt==='clay'){
+    {
       const nP=1+Math.floor(h*3);
       for(let i=0;i<nP;i++){
         const hh=_hash2(x*31+i*7,y*37+i*5);
@@ -9177,47 +9268,6 @@ function drawTerrainDetail(ctx,bx0,by0,bx1,by1){
         ctx.beginPath();ctx.moveTo(px+T*.12,sy);
         ctx.quadraticCurveTo(px+T*.5,sy+T*(h<.5?.06:-.06),px+T*.88,sy+T*(h2<.3?.03:-.03));
         ctx.stroke();
-      }
-    }else if(lt==='stone'||lt==='deeprock'){
-      if(h<.75){
-        ctx.globalAlpha=.24+h*.14;
-        ctx.strokeStyle=terrCol(LD);
-        ctx.lineWidth=T*.028;ctx.lineCap='round';
-        const sx=px+T*(.1+h2*.7),sy=py+T*(.12+((h2*5)%1)*.76);
-        const dir=h<.4?1:-1;
-        ctx.beginPath();ctx.moveTo(sx,sy);
-        ctx.lineTo(sx+T*.14*dir,sy+T*.08);
-        ctx.lineTo(sx+T*.22*dir,sy+T*.20);
-        ctx.stroke();
-      }
-      if(h2>.35){
-        ctx.globalAlpha=.18+((h2*9)%1)*.12;
-        ctx.fillStyle=terrCol(LB);
-        ctx.beginPath();ctx.ellipse(px+T*(.25+h*.5),py+T*(.25+((h*3)%1)*.5),T*.05,T*.034,0,0,7);ctx.fill();
-      }
-    }else if(lt==='bedrock'){
-      const nF=1+Math.floor(h*2);
-      for(let i=0;i<nF;i++){
-        const hh=_hash2(x*17+i*3,y*19+i*9);
-        const cx2=px+T*(.2+hh*.6),cy2=py+T*(.2+((hh*7)%1)*.6);
-        const s=T*(.08+((hh*13)%1)*.07);
-        ctx.globalAlpha=.18+((hh*11)%1)*.12;
-        ctx.fillStyle=terrCol(LD);
-        ctx.beginPath();
-        ctx.moveTo(cx2,cy2-s);ctx.lineTo(cx2+s*.8,cy2+s*.3);ctx.lineTo(cx2-s*.7,cy2+s*.5);
-        ctx.closePath();ctx.fill();
-      }
-    }else if(lt==='mantle'){
-      if(h<.8){
-        ctx.globalAlpha=.26;
-        ctx.fillStyle=terrCol(LD);
-        ctx.beginPath();ctx.ellipse(px+T*(.3+h2*.4),py+T*(.3+((h2*5)%1)*.4),T*.14,T*.09,h*3,0,7);ctx.fill();
-      }
-      if(h2<.5){
-        const pu=.5+.5*Math.sin((G.time||0)*1.6+h*7);
-        ctx.globalAlpha=.25+pu*.3;
-        ctx.fillStyle=terrCol(LB);
-        ctx.beginPath();ctx.arc(px+T*(.35+h*.3),py+T*(.35+((h*9)%1)*.3),T*.028+pu*T*.012,0,7);ctx.fill();
       }
     }
   }
@@ -9281,13 +9331,14 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1){
     }
   }
 }
-// v41 — CACTI: the plant layer over SAND (user: "a cactus which is like a
-// layer on top of sand so the layers go plants then grass/sand then dirt
-// then clay"). Same family as drawGrassDeco: deterministic per-tile hash,
-// sparse, hand-drawn canvas shapes — an upright saguaro (rounded body,
-// up-curving arms, rib strokes, occasional crown bloom) in the flat chunky
-// style. Every color reuses existing palette values (no new literals):
-// seller green body, battery-dark ribs, deco-pink bloom.
+// v44 — TOP-DOWN CACTUS (user: "like a tile but takes only 0.75 space
+// because it's like looking at a cactus from topdown perspective"). The v41
+// upright saguaro becomes a plan view: round trunk cross-section, 0-2 arm
+// pads on short necks, radial ribs, occasional crown bloom — the whole plant
+// fits a 0.75T circle so it reads as a distinct round object on the sand,
+// never a tile fill. Same family as drawGrassDeco (deterministic _hash2,
+// sparse, flat shapes); colors all reused (seller-green body, rib dark,
+// deco-pink bloom) + the machine-family contact shadow.
 function drawSandDeco(ctx,bx0,by0,bx1,by1){
   for(let y=by0;y<by1;y++)for(let x=bx0;x<bx1;x++){
     // fast path: the cached isSandAt rejects most visible tiles (one numeric
@@ -9296,51 +9347,50 @@ function drawSandDeco(ctx,bx0,by0,bx1,by1){
     if(!isSandAt(x,y))continue;
     const sc=cellAt(x,y);
     if(sc&&(sc.depth||1)>=2)continue;
-    const h=_hash2(x*5+3,y*5+11);
-    if(h>0.11)continue;              // sparse — dune fields stay calm, each cactus reads alone
+    // v46 — the cactus is a PLANT-layer tile (user): a machine occupying the
+    // tile destroys the plant, exactly like digging destroys the sand layer.
+    if(sc&&sc.m)continue;
+    if(!cactusAt(x,y))continue;      // sparse — dune fields stay calm, each cactus reads alone
     const h2=_hash2(x*13+1,y*13+7);
-    const px=x*T,py=y*T;
-    const bw=T*.16;                          // body width
-    const bh=T*(.34+((h2*7)%1)*.12);         // body height ~.34-.46 T
-    const cx0=px+T*(.3+((h2*11)%1)*.4);      // x position, jittered inside the tile
-    const cy0=py+T*(.82-((h2*13)%1)*.08);    // base in the lower half of the tile
-    const lean=(((h2*17)%1)-.5)*T*.06;       // slight organic lean (grass-blade convention)
-    // body — rounded-top capsule, upright like the blades
-    ctx.fillStyle='#58b368';
-    ctx.beginPath();
-    ctx.moveTo(cx0-bw/2,cy0);
-    ctx.lineTo(cx0-bw/2+lean*.6,cy0-bh+bw/2);
-    ctx.arc(cx0+lean*.6,cy0-bh+bw/2,bw/2,Math.PI,0);
-    ctx.lineTo(cx0+bw/2,cy0);
-    ctx.closePath();
-    ctx.fill();
-    // arms — 0-2 L-shaped strokes with round caps, leaning up like the body
-    const nA=Math.floor(h2*2.999);
-    ctx.strokeStyle='#58b368';ctx.lineWidth=T*.075;ctx.lineCap='round';
+    // plant center — tiny jitter; extent stays inside the 0.75T circle
+    const cx0=x*T+T/2+((((h2*11)%1)-.5)*T*.07);
+    const cy0=y*T+T/2+((((h2*13)%1)-.5)*T*.07);
+    const tr=T*(.155+((h2*7)%1)*.03);         // trunk radius .155-.185T
+    const nA=Math.floor(h2*2.999);            // 0-2 arms (v41 gate)
+    // contact shadow — soft ellipse under the plant (machine-shadow family)
+    ctx.fillStyle='rgba(60,50,32,.22)';
+    ctx.beginPath();ctx.ellipse(cx0+T*.035,cy0+T*.05,T*.235,T*.175,0,0,7);ctx.fill();
+    // arms first (under the trunk edge): pad + short neck, spread symmetric
     for(let a=0;a<nA;a++){
       const ah=_hash2(x*29+a*7,y*31+a*13);
-      const side=a%2?1:-1;
-      const ay=cy0-bh*(.34+ah*.26);
-      const t=(cy0-ay)/bh;                   // 0 at base → 1 at top
-      const ax=cx0+side*bw*.35+lean*t;       // body edge at this height (lean-following)
-      ctx.beginPath();
-      ctx.moveTo(ax,ay);
-      ctx.quadraticCurveTo(ax+side*T*.1,ay,ax+side*T*.1,ay-T*(.07+ah*.06));
-      ctx.stroke();
+      const base=((h2*17)%1)*Math.PI*2;       // deterministic plant heading
+      const sgn=a?-1:1;
+      const ang=base+sgn*(.9+ah*.5);
+      const dist=T*(.175+ah*.045);
+      const ar=T*(.068+ah*.028);
+      const axp=cx0+Math.cos(ang)*dist,ayp=cy0+Math.sin(ang)*dist;
+      ctx.strokeStyle='#58b368';ctx.lineWidth=T*.06;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(cx0,cy0);ctx.lineTo(axp,ayp);ctx.stroke();
+      ctx.fillStyle='#58b368';
+      ctx.beginPath();ctx.arc(axp,ayp,ar,0,7);ctx.fill();
     }
-    // ribs — 2 dark vertical strokes inside the body (the cactus read)
-    ctx.strokeStyle='#3f6e2a';ctx.lineWidth=T*.024;ctx.globalAlpha=.55;
-    for(const ro of [-.16,.16]){
+    // trunk — round cross-section (the top-down read)
+    ctx.fillStyle='#58b368';
+    ctx.beginPath();ctx.arc(cx0,cy0,tr,0,7);ctx.fill();
+    // ribs — radial strokes out from the center (cactus identity from above)
+    ctx.strokeStyle='#3f6e2a';ctx.lineWidth=T*.02;ctx.globalAlpha=.55;
+    for(let i=0;i<6;i++){
+      const ang=i/6*Math.PI*2+((h2*19)%1);
       ctx.beginPath();
-      ctx.moveTo(cx0+bw*ro,cy0-T*.05);
-      ctx.lineTo(cx0+bw*ro+lean*.75,cy0-bh+T*.09);
+      ctx.moveTo(cx0+Math.cos(ang)*tr*.3,cy0+Math.sin(ang)*tr*.3);
+      ctx.lineTo(cx0+Math.cos(ang)*tr*.9,cy0+Math.sin(ang)*tr*.9);
       ctx.stroke();
     }
     ctx.globalAlpha=1;
-    // bloom — occasional pink flower dot on the crown
+    // bloom — occasional pink flower at the crown center
     if(h2>.74){
       ctx.fillStyle='#e06080';
-      ctx.beginPath();ctx.arc(cx0+lean*.6,cy0-bh+T*.015,T*.032,0,7);ctx.fill();
+      ctx.beginPath();ctx.arc(cx0,cy0,T*.034,0,7);ctx.fill();
     }
   }
 }
@@ -9521,17 +9571,18 @@ function render(time){
       ctx.strokeStyle='rgba(216,67,46,.75)';ctx.lineWidth=2;
       rr(ctx,x*T+2,y*T+2,T-4,T-4,T*.2);ctx.stroke();
     }else if(G.tool==='builder'&&cell&&cell.m&&!cell.ref){
-      // v39 — Builder ghost: crate preview over the machine it would attach to
+      // v49 — Builder ghost: the full-tile box preview over the machine it
+      // would cover. Green when it can start the construction here.
       const mm=cell.m;
-      const ok=mm.construction
-        ?constructionSlots(mm,x,y)<Object.keys(mm.construction.need).length&&G.money>=priceOf('builder')
-        :!!upgOf(mm);
+      const ok=!mm.construction&&!!upgOf(mm)&&upgUnlocked(mm)&&G.money>=priceOf('builder');
       ctx.strokeStyle=ok?'rgba(88,179,104,.85)':'rgba(216,67,46,.85)';
       ctx.lineWidth=2;
       rr(ctx,x*T+2,y*T+2,T-4,T-4,T*.2);ctx.stroke();
-      ctx.globalAlpha=.55;
-      drawBuilderCrate(ctx,x*T+T/2,y*T+T/2,T*.86,0,0,1);
-      ctx.globalAlpha=1;
+      if(ok){
+        ctx.globalAlpha=.55;
+        drawBuilderBox(ctx,x*T+T/2,y*T+T/2,T*.9);
+        ctx.globalAlpha=1;
+      }
     }else if(cell&&((!cell.m&&!cell.ref)||((G.tool==='bridge'||G.tool==='splitter'||G.tool==='filter')&&cell.m&&cell.m.type==='belt'))){
       const ok=canPlace(G.tool,cell,x,y)&&G.money>=priceOf(G.tool)&&unlocked(G.tool);
       const fp=footprint(G.tool,useDir), W=fp.w*T, H=fp.h*T;
@@ -9660,9 +9711,9 @@ function render(time){
 function footCells(t,x,y,dir){const{w,h}=footprint(t,dir||G.dir);const out=[];for(let dy=0;dy<h;dy++)for(let dx=0;dx<w;dx++)out.push([x+dx,y+dy]);return out;}
 function canPlace(t,cell,x,y){
   if(t==='del')return false;
-  // v39 — Builder: "placeable" only onto an upgradable machine tile (the
-  // real attach happens in place()/pointerdown — never a real cell).
-  if(t==='builder')return!!(cell&&cell.m&&!cell.ref&&(cell.m.construction||upgOf(cell.m)));
+  // v49 — Builder: placeable onto an UNBOXED, upgradable, RESEARCHED machine
+  // (placing it starts the construction automatically — one box per site).
+  if(t==='builder')return!!(cell&&cell.m&&!cell.ref&&!cell.m.construction&&upgOf(cell.m)&&upgUnlocked(cell.m));
   // Water tiles (rivers/lakes) are unplaceable — EXCEPT for bridges, which
   // can span water. Check both cell.water (off-grid virtual cells) and
   // isWaterAt (in-grid tiles where cellAt returns the raw grid cell without
@@ -11513,6 +11564,27 @@ function _refreshUpImpl(){
   if(canUp)for(let i=0;i<MAX_LVL;i++){
     const d=document.createElement('div');d.className='pip'+(i<m.level?' f':'');pips.appendChild(d)}
   pips.style.display=canUp?'flex':'none';
+  // v49 — BUILDER BOX MENU (user: "when you click on the box, for the menu
+  // all you can see is the resources required to upgrade the machine"):
+  // while boxed, hide the tab strip and every section except the ingredient
+  // list. The stats pane is forced active so the list IS the panel.
+  const boxed=!!m.construction;
+  document.querySelectorAll('.up-tab').forEach(t=>t.style.display=boxed?'none':'');
+  if(boxed){
+    pips.style.display='none';
+    document.querySelectorAll('.up-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane==='stats'));
+    document.getElementById('upSpeed').closest('.st').style.display='none';
+    document.getElementById('upDepRow').style.display='none';
+    document.getElementById('upActionsStats').style.display='none';
+    document.getElementById('invSec').style.display='none';
+    document.getElementById('recipeSec').style.display='none';
+    const _msx=document.getElementById('marketSec');if(_msx)_msx.style.display='none';
+    const _rsx=document.getElementById('radiusSec');if(_rsx)_rsx.style.display='none';
+    const _fsx=document.getElementById('filterSec');if(_fsx)_fsx.style.display='none';
+  }else{
+    document.getElementById('upSpeed').closest('.st').style.display='';
+    document.getElementById('upActionsStats').style.display='flex';
+  }
   if(m.type==='excavator'){
     // Coal-driven: show coal progress toward next block
     const coalProgress=m.coalProgress||0;
@@ -11550,12 +11622,23 @@ function _refreshUpImpl(){
     const size=1+2*rad;
     const coalProgress=m.coalProgress||0;
     const sp=spdOf(m,G.sel.x,G.sel.y);
-    // v41 — sand strata: a sand tile's next dig jumps straight to Clay
-    const nextDepth=Math.min((depth<2&&isSandAt(G.sel.x,G.sel.y))?CLAY_START_DEPTH:depth+1,LAYERS.length-1);
+    // v47 — FLAT DIG preview: the next dig steps the bore's SHALLOWEST tiles.
+    // Preview the layer those tiles reach (sand tiles jump straight to Clay).
+    let minD=depth;
+    for(let dy=-rad;dy<=rad;dy++)for(let dx=-rad;dx<=rad;dx++){
+      const nx=G.sel.x+dx,ny=G.sel.y+dy;
+      if(isWaterAt(nx,ny))continue;
+      const nc2=cellAt(nx,ny);
+      if(!nc2)continue;
+      const nd=nc2.depth||1;
+      if(nd<LAYERS.length&&nd<minD)minD=nd;
+    }
+    const shallowSand=minD<2&&isSandAt(G.sel.x,G.sel.y)&&depth===minD;
+    const nextDepth=Math.min(shallowSand?CLAY_START_DEPTH:(depth===minD?depth+1:minD),LAYERS.length-1);
     const nInfo=layerInfoAt(nextDepth);
     const tName=nInfo?nInfo.name:'?';
     const burnRate=(EXCAVATOR_COAL_BURN_RATE*sp).toFixed(1);
-    ex.textContent=`L${nextDepth} ${tName} (${nInfo?nInfo.subIdx+1:0}/${nInfo?nInfo.type.count:1}) · ${size}×${size} · ${Math.round(coalProgress)}/${EXCAVATOR_COAL_PER_BLOCK} coal · ${burnRate}/s`}
+    ex.textContent=`L${nextDepth} ${tName} (${nInfo?nInfo.subIdx+1:0}/${nInfo?nInfo.type.count:1}) · ${size}×${size} flat · ${Math.round(coalProgress)}/${EXCAVATOR_COAL_PER_BLOCK} coal · ${burnRate}/s`}
   else if(m.construction){exLab.textContent='Constructing';
     const cc2=m.construction;let gA=0,nA=0;
     for(const k in cc2.need){gA+=Math.min(cc2.got[k]||0,cc2.need[k]);nA+=cc2.need[k]}
@@ -11590,16 +11673,22 @@ function _refreshUpImpl(){
   else if(m.type==='workshop'){exLab.textContent='Aura';ex.textContent=`+${Math.round(boostMult(m)*100)}% speed · $${m.level}/min upkeep`}
   else if(isExtender(m)){
     const host=extenderHost(G.sel.x,G.sel.y,m);
-    exLab.textContent='Extends';
-    if(host&&host.m){
-      const ht=host.m.type;
-      const hn=TOOLS[ht]&&TOOLS[ht].name?TOOLS[ht].name:ht;
-      // distance through the chain (1 = direct, 2 = one extender in between, etc.)
-      let dist=1,cx=G.sel.x,cy=G.sel.y,cm=m,guard=12;
-      while(cm&&isExtender(cm)){cx+=DV[cm.hostDir].x;cy+=DV[cm.hostDir].y;const nc=cellAt(cx,cy);if(!nc||!nc.m)break;cm=nc.m;if(!isExtender(cm))break;dist++;}
-      ex.textContent=`${hn} · ${dist} tile${dist>1?'s':''} away`;
+    if(host&&host.m&&host.m.construction){
+      // v49 — ingredient interface readout
+      exLab.textContent='Feeds';
+      ex.textContent=m.feedItem?(ITEMS[m.feedItem].name+' into the Builder box'):'nothing — pick an ingredient';
     }else{
-      ex.textContent='no host (chain broken)';
+      exLab.textContent='Extends';
+      if(host&&host.m){
+        const ht=host.m.type;
+        const hn=TOOLS[ht]&&TOOLS[ht].name?TOOLS[ht].name:ht;
+        // distance through the chain (1 = direct, 2 = one extender in between, etc.)
+        let dist=1,cx=G.sel.x,cy=G.sel.y,cm=m,guard=12;
+        while(cm&&isExtender(cm)){cx+=DV[cm.hostDir].x;cy+=DV[cm.hostDir].y;const nc=cellAt(cx,cy);if(!nc||!nc.m)break;cm=nc.m;if(!isExtender(cm))break;dist++;}
+        ex.textContent=`${hn} · ${dist} tile${dist>1?'s':''} away`;
+      }else{
+        ex.textContent='no host (chain broken)';
+      }
     }
   }
   else{exLab.textContent='Carries';ex.textContent='items'}
@@ -11611,42 +11700,40 @@ function _refreshUpImpl(){
       const c=m.construction;
       conSec.style.display='block';
       const ings=Object.keys(c.need);
-      const slots=constructionSlots(m,G.sel.x,G.sel.y);
+      const exts=constructionExtenders(G.sel.x,G.sel.y);
       const hdr=document.createElement('div');
       hdr.style.cssText='display:flex;align-items:center;gap:6px;margin:2px 0 6px';
       hdr.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">CONSTRUCTING</span>'+
         '<span style="font-size:11px;font-weight:700">'+TOOLS[c.to].name.toUpperCase()+'</span>'+
-        '<span style="font-size:9px;color:var(--muted);margin-left:auto">'+ings.length+' ingredients · '+slots+'/'+ings.length+' slots</span>';
+        '<span style="font-size:9px;color:var(--muted);margin-left:auto">'+exts.length+'/'+ings.length+' inputs wired</span>';
       conSec.appendChild(hdr);
       for(let i=0;i<ings.length;i++){
         const k=ings[i],needN=c.need[k],gotN=Math.min(c.got[k]||0,needN);
+        const extIdx=exts.findIndex(e=>e.feedItem===k);
         const row=document.createElement('div');
         row.style.cssText='display:flex;align-items:center;gap:6px;margin:3px 0';
         const cv=document.createElement('canvas');cv.width=cv.height=30;
         cv.getContext('2d').drawImage(itemSpr[k],0,0,30,30);
         row.appendChild(cv);
         const lab=document.createElement('div');
-        lab.style.cssText='flex:1;font-size:10.5px;color:'+(i<slots?'inherit':'var(--muted)');
-        lab.innerHTML=ITEMS[k].name+' <b>'+gotN+'/'+needN+'</b>'+(i<slots?'':' <span style="color:#e85d4a;font-size:9px">· needs slot '+(i+1)+'</span>');
+        lab.style.cssText='flex:1;font-size:10.5px;color:'+(extIdx>=0?'inherit':'var(--muted)');
+        lab.innerHTML=ITEMS[k].name+' <b>'+gotN+'/'+needN+'</b>'+
+          (extIdx>=0
+            ?' <span style="color:#d9824a;font-size:9px">· EXT '+(extIdx+1)+' feeds this</span>'
+            :' <span style="color:#e85d4a;font-size:9px">· needs an Extender</span>');
         row.appendChild(lab);
         const bar=document.createElement('div');
         bar.style.cssText='width:64px;height:7px;border-radius:4px;background:rgba(0,0,0,.10);overflow:hidden;flex:none';
         const fill=document.createElement('div');
         fill.style.cssText='height:100%;width:'+(gotN/needN*100)+'%;background:'+(gotN>=needN?'#9fd45e':'#d9824a');
         bar.appendChild(fill);row.appendChild(bar);
-        const slot=document.createElement('span');
-        slot.style.cssText='font-size:11px;width:16px;text-align:center;flex:none;color:#d9824a';
-        slot.textContent=i<c.builders.length?'●':(i===c.builders.length&&constructionExtCount(G.sel.x,G.sel.y)>0?'⊕':'—');
-        row.appendChild(slot);
         conSec.appendChild(row);
       }
       const foot=document.createElement('div');
       foot.style.cssText='display:flex;align-items:center;gap:8px;margin-top:6px';
       const hintEl2=document.createElement('div');
       hintEl2.style.cssText='flex:1;font-size:9.5px;color:var(--muted);line-height:1.45';
-      hintEl2.innerHTML=slots<ings.length
-        ?'Select the <b>Builder</b> tool and click this machine to drop another crate (one ingredient each). First attached Extender = +1 slot.'
-        :'All slots live — feed the ingredients in by belt. The machine stays locked while upgrading.';
+      hintEl2.innerHTML='Items enter ONLY through <b>Extenders</b>: point one at the box, open it, and pick the ingredient it feeds (one ingredient each).';
       foot.appendChild(hintEl2);
       const cancel=document.createElement('button');
       cancel.className='ub danger';
@@ -11655,6 +11742,42 @@ function _refreshUpImpl(){
       cancel.addEventListener('click',()=>{audio();cancelConstruction(m,G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl()});
       foot.appendChild(cancel);
       conSec.appendChild(foot);
+    }else if(isExtender(m)){
+      // v49 — EXTENDER = INGREDIENT INTERFACE (user: "you can see and select
+      // which item in the interface for the extender, like the interface for
+      // the market"). One button per box ingredient; click to assign.
+      const host=extenderHost(G.sel.x,G.sel.y,m);
+      if(host&&host.m&&host.m.construction){
+        const cc=host.m.construction;
+        conSec.style.display='block';
+        const ings=Object.keys(cc.need);
+        const hdr=document.createElement('div');
+        hdr.style.cssText='display:flex;align-items:center;gap:6px;margin:2px 0 6px';
+        hdr.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">INGREDIENT INTERFACE</span>'+
+          '<span style="font-size:9px;color:var(--muted);margin-left:auto">'+TOOLS[cc.to].name.toUpperCase()+' BOX</span>';
+        conSec.appendChild(hdr);
+        const grid=document.createElement('div');
+        grid.style.cssText='display:grid;grid-template-columns:repeat(2,1fr);gap:5px';
+        for(const k of ings){
+          const b=document.createElement('button');
+          b.className='rbtn'+(m.feedItem===k?' on':'');
+          b.style.cssText='flex-direction:row;justify-content:flex-start;gap:7px;padding:5px 7px;text-align:left';
+          const cv=document.createElement('canvas');cv.width=cv.height=34;
+          cv.getContext('2d').drawImage(itemSpr[k],0,0,34,34);
+          b.appendChild(cv);
+          const sp=document.createElement('span');
+          sp.style.cssText='font-size:10px;line-height:1.25';
+          sp.innerHTML=ITEMS[k].name+'<br><span style="opacity:.65;font-size:8.5px">'+Math.min(cc.got[k]||0,cc.need[k])+'/'+cc.need[k]+' delivered</span>';
+          b.appendChild(sp);
+          b.addEventListener('click',()=>{audio();m.feedItem=(m.feedItem===k?null:k);SFX.belt();_refreshUpLastTime=0;_refreshUpImpl()});
+          grid.appendChild(b);
+        }
+        conSec.appendChild(grid);
+        const hintEl3=document.createElement('div');
+        hintEl3.style.cssText='font-size:9.5px;color:var(--muted);line-height:1.45;margin-top:6px';
+        hintEl3.innerHTML='Feeding <b>'+(m.feedItem?ITEMS[m.feedItem].name:'nothing yet')+'</b>. Belts deliver here — click a button to switch (click again to unassign).';
+        conSec.appendChild(hintEl3);
+      }else conSec.style.display='none';
     }else if(upgOf(m)){
       conSec.style.display='block';
       const u=upgOf(m),unl=upgUnlocked(m);
@@ -11668,14 +11791,16 @@ function _refreshUpImpl(){
       box.appendChild(head);
       const sub=document.createElement('div');
       sub.style.cssText='font-size:9.5px;color:var(--muted);margin:3px 0 5px;line-height:1.5';
-      sub.textContent=(TOOLS[u.to].desc||'')+' Build set: '+ings+'.';
+      sub.textContent=(TOOLS[u.to].desc||'')+' Build set: '+ings+'. Drag a Builder onto this machine to box it up — or use the button. Ingredients go in through Extenders.';
       box.appendChild(sub);
       const btn=document.createElement('button');
       btn.className='ub main';
       btn.style.cssText='width:100%;font-size:10.5px;justify-content:center';
       if(unl){
-        btn.textContent='START CONSTRUCTION — '+TOOLS[u.to].name.toUpperCase();
-        btn.addEventListener('click',()=>{audio();startConstruction(m,G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl()});
+        // v49 — placing the Builder starts the upgrade automatically; this
+        // button does the same purchase (box drops, machine gets covered).
+        btn.textContent='DROP BUILDER — $'+fmt(priceOf('builder'));
+        btn.addEventListener('click',()=>{audio();attachBuilder(G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl()});
       }else{
         const tn=(TECHS.find(t=>t.id===u.tech)||{name:u.tech}).name;
         btn.textContent='🔒 RESEARCH '+tn.toUpperCase();
@@ -11696,7 +11821,7 @@ function _refreshUpImpl(){
   }else depRow.style.display='none';
   // inventory
   const invSec=document.getElementById('invSec');
-  const hasInv=m.type==='drill'||m.type==='excavator'||PROC[m.type]||isAsm(m)||m.type==='trader'||!!m.construction;
+  const hasInv=!m.construction&&(m.type==='drill'||m.type==='excavator'||PROC[m.type]||isAsm(m)||m.type==='trader');   // v49 — no inventory while boxed
   if(hasInv){
     invSec.style.display='block';
     const list=document.getElementById('invList');list.innerHTML='';
@@ -11967,7 +12092,8 @@ function _refreshUpImpl(){
     const options=[
       {r:0, label:'1×1', desc:'single tile'},
       {r:1, label:'3×3', desc:'9 tiles', reqTech:1},
-      {r:2, label:'5×5', desc:'25 tiles', reqTech:2}
+      {r:2, label:'5×5', desc:'25 tiles', reqTech:2},
+      {r:4, label:'9×9', desc:'81 tiles', reqTech:4}
     ];
     for(const opt of options){
       const locked=opt.reqTech > radMax;
@@ -15107,7 +15233,7 @@ body.cine-mode .stage{padding:0 !important}
   var CATS={
     mine:['drill','excavator','trader'],
     move:['belt','splitter','bridge','filter','extender'],
-    make:['smelter','crusher','refinery','press','wiremill','assembler','fabricator','quantumForge','dysonFoundry'],
+    make:['smelter','crusher','refinery','press','wiremill','assembler','fabricator','quantumForge','dysonFoundry','builder'],  // v43 — Builder was missing from every tab (applyFilter hid it); now selectable under MAKE
     boost:['foreman','workshop'],
     sell:['seller','del']
   };
