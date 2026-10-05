@@ -2373,7 +2373,7 @@ function paintTerrain(ctx,x,y,T,depth){
     const n1=fbm(x*0.35,y*0.35,3);           // coarse — large patches
     const n2=fbm(x*1.8+100,y*1.8+100,2);     // fine — speckling
     const n3=fbm(x*4.2+50,y*4.2+50,1);       // very fine — grain
-    let v=(n1-0.5)*0.30 + (n2-0.5)*0.13 + (n3-0.5)*0.07;   // combined ±0.25 (v19: bolder — flat tiles were the #1 VLM critique)
+    let v=(n1-0.5)*0.10 + (n2-0.5)*0.05 + (n3-0.5)*0.03;   // combined ±0.09 (v34: calm — ±0.25 read as busy patchwork; user wants flat)
     // Depth shading: tiles that are deeper than their neighbors get darkened
     // to suggest depth/recession (like a pit casting a shadow on itself).
     // Compare this tile's depth to the average of its 4 neighbors — if we're
@@ -2404,11 +2404,16 @@ function paintTerrain(ctx,x,y,T,depth){
     // (x+1,y+.5). The east stop of a tile and the west stop of its right
     // neighbor are the SAME world point, so color flows continuously across
     // every vertical border — the horizontal seams are covered by mottling.
-    const vAt=(cx,cy)=>(fbm(cx*0.35,cy*0.35,3)-0.5)*0.30
-      +(fbm(cx*1.8+100,cy*1.8+100,2)-0.5)*0.13
-      +(fbm(cx*4.2+50,cy*4.2+50,1)-0.5)*0.07;
+    const vAt=(cx,cy)=>(fbm(cx*0.35,cy*0.35,3)-0.5)*0.10
+      +(fbm(cx*1.8+100,cy*1.8+100,2)-0.5)*0.05
+      +(fbm(cx*4.2+50,cy*4.2+50,1)-0.5)*0.03;
     const vW=vAt(x,y+.5), vE=vAt(x+1,y+.5);
-    const dShade=neighborCount>0?Math.min(0.25,(myDepth-neighborSum/neighborCount)*0.08):0;
+    // v35 — clamp the BOTTOM too: a negative diff (shallow tile next
+    // to deeper terrain, e.g. the grass ring around the topsoil world)
+    // used to pass through as a NEGATIVE shade and BRIGHTEN the tile by
+    // 8% per depth step — that is why grass right outside the dirt read
+    // as a lighter band. Depth shading only ever DARKENS deeper tiles.
+    const dShade=neighborCount>0?Math.max(0,Math.min(0.25,(myDepth-neighborSum/neighborCount)*0.08)):0;
     const baseW=blendedLayerColor(x,y+.5,depth);
     const baseE=blendedLayerColor(x+1,y+.5,depth);
     let r=Math.max(0,Math.min(255,Math.round(baseW[0]*(1+vW-dShade))));
@@ -2482,11 +2487,18 @@ function paintTerrain(ctx,x,y,T,depth){
   // Helper: get the base color [r,g,b] for the tile at (tx,ty)
   function neighborColor(tx,ty){
     const c=cellAt(tx,ty);
-    if(c&&c.water) return [92,156,172];            // water shallow
-    if(c&&c.terr!=='floor'&&ORES[c.terr]) return blendedLayerColor(tx,ty,c.depth||1);
-    const d=c?c.depth:0;
-    if(!c||d<1) return [140,180,95];               // grass
-    return blendedLayerColor(tx,ty,d);
+    if(c&&c.water) return [92,156,172];            // water shallow (animated painter owns it)
+    let base;
+    if(c&&c.terr!=='floor'&&ORES[c.terr]) base=blendedLayerColor(tx,ty,c.depth||1);
+    else if(!c||!(c.depth>0)) base=[140,180,95];   // grass
+    else base=blendedLayerColor(tx,ty,c.depth);
+    // v30 — apply the SAME continuous noise field the real tile fills
+    // use (vAt octaves), so the corner-gap fill matches its neighbors
+    // instead of reading as a flat unmodulated swatch at every corner.
+    const vv=1+(fbm(tx*.35,ty*.35,3)-.5)*.10
+             +(fbm(tx*1.8+100,ty*1.8+100,2)-.5)*.05
+             +(fbm(tx*4.2+50,ty*4.2+50,1)-.5)*.03;
+    return [base[0]*vv,base[1]*vv,base[2]*vv];
   }
   // For each rounded corner, find the majority type (appears 3× at the corner)
   // and sample its color from one of the 3 majority tiles. Use the first found.
@@ -2587,46 +2599,6 @@ function grassFringe(g,x0,y0,x1,y1,nx,ny,seed){
     if(h>.45){g.fillStyle='#9ac06a';g.beginPath();g.arc(fx+nx*T*.03,fy+ny*T*.03,T*.033,0,7);g.fill()}
   }
 }
-// ============================================================
-//  v31 — WIND FIELD + CAMERA SHAKE (animation overhaul core)
-//  _wind(x,y,t): traveling gust field — two moving wavefronts of
-//  different wavelengths + a slow gust envelope. Grass gets calm
-//  stretches, building gusts, and per-position phase: gusts TRAVEL
-//  across the map instead of pulsing in place. Range [-1,1].
-//  _shk/_addShake/_stepShake: decaying sinusoidal camera shake in
-//  SCREEN pixels; render() divides by zoom so the thump reads the
-//  same at every zoom level. G.cam itself is never touched, so
-//  clampCam / gsap camera flights are unaffected.
-// ============================================================
-window._wind=function(x,y,t){
-  t=t||0;
-  // fast shimmer (~3s cycle — reads as a live breeze at gameplay zoom) +
-  // a slower counter-phase wave, wrapped in a slow gust envelope so there
-  // are calm stretches and building gusts. Spatial phase = gusts TRAVEL.
-  const env=.55+.45*Math.sin(t*.13+x*.004+y*.0031);
-  return (Math.sin(t*2.1+x*.06+y*.024)*.58+Math.sin(t*1.15-x*.03+y*.04+1.7)*.42)*env;
-};
-window._shk={a:0,d:0,d0:.28,ph:0,seed:0,dx:0,dy:0};
-window._addShake=function(amp,dur){
-  const s=window._shk;
-  if(!s||document.hidden)return;
-  if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-  s.a=Math.max(s.a,Math.min(amp,5));
-  const nd=dur||.28;
-  if(nd>s.d){s.d=nd;s.d0=nd}
-  s.seed=Math.random()*7;
-};
-window._stepShake=function(dt){
-  const s=window._shk;
-  if(!s)return;
-  if(s.d<=0){s.dx=0;s.dy=0;s.a=0;return}
-  s.d-=dt;
-  const k=Math.max(0,s.d/s.d0);
-  s.ph+=dt*46;
-  s.dx=Math.sin(s.ph*1.31+s.seed)*s.a*k;
-  s.dy=Math.cos(s.ph*1.07+s.seed*2.3)*s.a*k*.72;
-  if(s.d<=0){s.a=0;s.dx=0;s.dy=0}
-};
 function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
   // Edge stroke width is PROPORTIONAL TO TILE SIZE (T) so the border scales
   // naturally with zoom — matching how belt casing (s*ROAD_CASE_W) scales.
@@ -2779,7 +2751,7 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
         const y0=topQ?py+r:py;
         const y1=botQ?py+T-r:py+T;
         if(wIsGrass){
-          grassEdges.push({col,px,y0,y1,edge:'W',gx:here==='grass'?1:-1,gy:0,dA:dirtDark(here==='grass'?W:here)});
+          grassEdges.push({col,px,py,T,r,topQ,botQ,y0,y1,edge:'W',gx:here==='grass'?1:-1,gy:0,dA:dirtDark(here==='grass'?W:here)});
         }else{
           ctx.strokeStyle=col;
           ctx.beginPath();ctx.moveTo(px,y0);ctx.lineTo(px,y1);ctx.stroke();
@@ -2803,248 +2775,61 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
   //      gaps, each draping from the lip onto the dirt side.
   //   5. bleed — dirt crumbs kicked up onto the grass, green runners
   //      creeping into the dirt. Kills the binary green/brown switch.
-  for(const e of grassEdges){
-    const gxn=e.gx||0, gyn=e.gy||0;          // unit normal INTO grass
-    // corner-shortened span for the lip (skip the rounded corner arcs)
+    for(const e of grassEdges){
+    // v34 — FLAT GREEN BORDER (user: "why did you redetail it"). The v29/v30
+    // organic bank — graded AO wash, meandering lip, blade curtain, bleed
+    // flecks — is gone. What remains is ONE solid green stroke riding the
+    // exact tile-boundary path:
+    //   * straight span between the corner tangent points (no meander);
+    //   * corner arcs are the SAME arcTo geometry the tile fill rounds
+    //     with, so stroke and fill are concentric by construction;
+    //   * at width lipW the stroke spans +-lipW/2 around the boundary, so
+    //     the fill edge can never poke out past it (v30's coverage fix,
+    //     minus the organic dressing).
     let ax,ay,bx2,by2;
     if(e.edge==='E'){ax=e.x1;ay=e.topQ?e.py+e.r:e.py;bx2=e.x1;by2=e.botQ?e.py+e.T-e.r:e.py+e.T;}
     else if(e.edge==='W'){ax=e.px;ay=e.y0;bx2=e.px;by2=e.y1;}
     else if(e.edge==='S'){ax=e.x0;ay=e.y1;bx2=e.x1;by2=e.y1;}
     else{ax=e.x0;ay=e.py;bx2=e.x1;by2=e.py;}
-    const spanX=bx2-ax, spanY=by2-ay;
-    const span=Math.hypot(spanX,spanY);
-    if(span<=0)continue;
-    const detailOn=T*G.cam.zoom>=26;         // matches drawTerrainDetail's gate
-    const seed=Math.round(ax/T)*13+Math.round(ay/T)*57+e.edge.charCodeAt(0)*7;
-    // --- v29b: the lip line — low-frequency wander + fine ripple ---
-    // Two octaves: `lo` (fbm, ~1.5-tile wavelength) modulates the amplitude
-    // so some stretches run near-straight and others swing broadly — no
-    // uniform sawtooth. `hi` (per-vertex hash) adds fine ripple on top, and
-    // the whole thing renders with midpoint quadratic smoothing: flowing
-    // curves, not torn paper.
-    // v30b — the lip path and its shadow pools are frame-invariant (pure
-    // hash/fbm of world coords), so they are built once per (edge, span)
-    // and cached in a bounded map on window. The span is part of the key:
-    // digging a corner changes the span, which re-keys the entry.
-    const LC=window._v30lc||(window._v30lc=new Map());
-    const lkey=Math.round(ax)+'_'+Math.round(ay)+'_'+e.edge+'_'+Math.round(span*8);
-    let cached=LC.get(lkey);
-    if(!cached){
-      const lipPts=[[ax,ay]];
-      const nP=Math.max(3,Math.round(span/(T*.34)));
-      let bayCarry=0;                       // v30f — bay echo for the next vertex
-      for(let i=1;i<nP;i++){
-        const t=i/nP;
-        const vx=ax+spanX*t, vy=ay+spanY*t;
-        const lo=Math.min(1,fbm(vx/T*.9,vy/T*.9,2)/.75);
-        const hi=_hash2(Math.round(vx*8),Math.round(vy*8));
-        const hi2=_hash2(Math.round(vx*24),Math.round(vy*24));
-        const amp=T*(.06+lo*.16);              // .06-.22T depending on stretch (v30e: was .045-.16T — 'cookie cutter')
-        let m=(hi-.5)*2*amp+(lo-.5)*2*T*.07+(hi2-.5)*2*T*.03; // ripple+broad+micro
-        // v30f — BAYS: rare deep notches, SPANNING TWO consecutive vertices
-        // (a single spike gets halved by the midpoint smoothing below, so
-        // the crag never read). 8% of vertices open a .09-.19T dip and the
-        // next vertex carries a partial echo — sudden irregular incursions
-        // instead of a smooth procedural wave.
-        if(hi<.08)m-=T*(.09+hi2*.10);
-        else if(bayCarry>0){m-=bayCarry;bayCarry=0}
-        if(hi<.08)bayCarry=T*(.05+hi2*.06);
-        lipPts.push([vx+gxn*m,vy+gyn*m]);
-      }
-      lipPts.push([bx2,by2]);
-      // the meander lip as ONE Path2D — stroked by the wash bands
-      // (translated into the dirt) and by the lip line itself.
-      const p2=new Path2D();
-      p2.moveTo(lipPts[0][0],lipPts[0][1]);
-      for(let i=1;i<lipPts.length-1;i++){
-        const mx=(lipPts[i][0]+lipPts[i+1][0])/2;
-        const my=(lipPts[i][1]+lipPts[i+1][1])/2;
-        p2.quadraticCurveTo(lipPts[i][0],lipPts[i][1],mx,my);
-      }
-      p2.lineTo(bx2,by2);
-      // v30 core pools, prebuilt with their alpha multipliers
-      const pools=[];
-      let pi=0;
-      while(pi<lipPts.length-1){
-        const hp=_hash2(seed*53+pi*29,seed*71+pi*41);
-        const plen=2+Math.floor(hp*2);
-        const pEnd=Math.min(pi+plen,lipPts.length-1);
-        if(hp>.34&&pEnd>pi){
-          const pp=new Path2D();
-          pp.moveTo(lipPts[pi][0],lipPts[pi][1]);
-          for(let k=pi+1;k<=pEnd;k++){
-            if(k<pEnd){
-              const mx=(lipPts[k][0]+lipPts[k+1][0])/2, my=(lipPts[k][1]+lipPts[k+1][1])/2;
-              pp.quadraticCurveTo(lipPts[k][0],lipPts[k][1],mx,my);
-            }else pp.lineTo(lipPts[k][0],lipPts[k][1]);
-          }
-          pools.push({p:pp,a:.75+((hp*7)%1)*.5});
-        }
-        pi=pEnd+1;
-      }
-      if(LC.size>4000)LC.clear();
-      LC.set(lkey,cached={p2,pools});
+    if(Math.hypot(bx2-ax,by2-ay)<=0)continue;
+    // v35 — the green rim rides ENTIRELY on the non-grass side of the
+    // boundary. The v34 centered stroke painted +-lipW/2, so a 0.06T band
+    // of border green landed ON the grass tiles — every grass tile touching
+    // the border read as a lighter strip against the field. Shifting the
+    // path lipW/2 toward the dirt/water side keeps the exact same coverage
+    // guarantee (the stroke's inner edge sits exactly on the tile boundary,
+    // so the fill can never poke past it) while grass pixels stay untouched.
+    const lipW=T*.12, hw=lipW/2;
+    const isV=e.edge==='E'||e.edge==='W';
+    const jx=e.edge==='E'?e.x1:e.px;
+    const dx=-e.gx*hw, dy=-e.gy*hw;   // shift toward the non-grass side
+    const p2=new Path2D();
+    if(isV&&e.topQ){
+      // Corner arc, offset WITH the boundary. The original arc hugs the
+      // minority tile's rounded corner (center = lattice corner + r on the
+      // minority diagonal). Offsetting toward the majority side by hw keeps
+      // the SAME center: radius r-hw when the minority tile is the non-grass
+      // one (arc shrinks inward), r+hw when the minority tile is grass (arc
+      // grows outward). Tangent points shift with the spans; along-axis
+      // coordinates are unchanged, so consecutive edges still meet exactly.
+      const sx=e.topQ==='SW'?-1:1;    // minority-diagonal x sign (top arcs)
+      const gmin=e.gx===sx;           // minority tile sits on the grass side
+      const cyy=e.py+(gmin?-hw:hw);
+      p2.moveTo(jx+sx*e.r,cyy);
+      p2.arcTo(jx+dx,cyy,jx+dx,e.py+e.r,e.r+(gmin?hw:-hw));
+    }else{
+      p2.moveTo(isV?ax+dx:ax, isV?ay:ay+dy);
     }
-    const p2=cached.p2, pools=cached.pools;
-    // --- layer 1: graded AO wash onto the dirt side ---
-    // THREE nested-coverage strokes (tight .018T core reaching .4T out),
-    // each the same Path2D translated into the dirt. No separate hard line
-    // element — the falloff is the grounding.
-    if(detailOn){
-      const neutral=!(e.dA&&e.dA.length===3);
-      const wash=neutral?'rgba(0,0,0,.12)':terrCol(e.dA);
-      // v30 — the core band is no longer a continuous stroke (it read as a
-      // uniform ribbon, like a 5px UI stroke laid along the edge). The core
-      // now renders as POOLS — short sub-runs of the lip at hash-chosen
-      // spots — so the darkest grounding hugs the lip in patches, the way
-      // real overhang shade pools where the bank protrudes. Outer bands
-      // stay continuous so the falloff is still graded.
-      const bands=[[.06,.14,.10],[.12,.24,.07],[.19,.40,.06]];
-      ctx.save();
-      ctx.lineCap='butt';
-      for(let bi=0;bi<3;bi++){
-        ctx.save();
-        ctx.translate(-gxn*T*bands[bi][0],-gyn*T*bands[bi][0]);
-        ctx.strokeStyle=wash;
-        ctx.lineWidth=T*bands[bi][1];
-        ctx.globalAlpha=neutral?bands[bi][2]/.12:bands[bi][2];
-        ctx.stroke(p2);
-        ctx.restore();
-      }
-      // core pools (v30, prebuilt in the cache) — offset .018T, width
-      // .08T, ~60% coverage along the lip. v30e: the pools are now
-      // NEUTRAL BLACK at alpha .22-.38 — occlusion dark under the bank
-      // overhang, layered over the warm ambient bands. The v30c warm-only
-      // pools were 3-4 lum of contrast (the layer dark sits only ~18 lum
-      // under the floor) and were literally invisible; black cores read
-      // on every stratum, including the dark ones.
-      const poolOfs=T*.018, poolW=T*.08;
-      // v30d — every pool shares the same offset/width/style: ONE state
-      // save for the set, per-pool alpha only
-      ctx.save();
-      ctx.translate(-gxn*poolOfs,-gyn*poolOfs);
-      ctx.strokeStyle='rgba(0,0,0,.12)';
-      ctx.lineWidth=poolW;
-      for(const pool of pools){
-        ctx.globalAlpha=2.5*pool.a;          // .30 base alpha
-        ctx.stroke(pool.p);
-      }
-      ctx.restore();
-      ctx.restore();
+    p2.lineTo(isV?bx2+dx:bx2, isV?by2:by2+dy);
+    if(isV&&e.botQ){
+      const sx=e.botQ==='NW'?-1:1;    // minority-diagonal x sign (bottom arcs)
+      const gmin=e.gx===sx;
+      const cyy=e.py+e.T+(gmin?hw:-hw);
+      p2.arcTo(jx+dx,cyy,jx+sx*e.r,cyy,e.r+(gmin?hw:-hw));
     }
-    // --- layer 2: the crisp green lip line (grounded by the wash core) ---
     ctx.lineCap='round';
-    ctx.strokeStyle=e.col;ctx.lineWidth=lineW;
+    ctx.strokeStyle=e.col;ctx.lineWidth=lipW;
     ctx.stroke(p2);
-    // --- layer 4: irregular blade curtain draping onto the dirt ---
-    if(detailOn){
-      const ux=spanX/span, uy=spanY/span;    // unit tangent along the edge
-      // v30 — jitter-walk placement: blade roots advance by a hashed step
-      // (.13-.34 of the span) instead of an index lattice, so the curtain
-      // clusters and thins organically — no "hedge trimmer" rhythm, and
-      // consecutive tiles share no lattice phase.
-      let bi=0, tw=.04+_hash2(seed,seed+3)*.14;
-      while(tw<.96&&bi<9){
-        const hb=_hash2(seed*31+bi*7,seed*17+bi*13);
-        const t=tw;
-        const lx=ax+spanX*t, ly=ay+spanY*t;
-        const lipM=(hb-.5)*2*T*.06;
-        const rootx=lx+gxn*(T*.03+lipM*.5), rooty=ly+gyn*(T*.03+lipM*.5);
-        const drop=T*(.10+hb*.14);
-        const splay=(hb*7%1-.5)*T*.12;
-        let tpx=lx-gxn*drop+ux*splay, tpy=ly-gyn*drop+uy*splay;
-        let qcx=lx-gxn*T*.05+ux*splay*.3, qcy=ly-gyn*T*.05+uy*splay*.3;
-        // v31 — WIND SWAY: the blade tip whips along the bank tangent with a
-        // per-blade response (hb), gusts slightly LIFT the drape (the blade
-        // leans off the wall), and the control point takes half the sway so
-        // the blade BENDS instead of rigidly translating. The lit outer half
-        // (m0) derives from the swayed points below, so it follows for free.
-        const wv=window._wind?_wind(lx,ly,G.time)*(.45+hb*.75):0;
-        tpx+=ux*wv*T*.068; tpy+=uy*wv*T*.068;
-        const lift=Math.abs(wv)*drop*.22;
-        tpx+=gxn*lift; tpy+=gyn*lift;
-        qcx+=ux*wv*T*.028; qcy+=uy*wv*T*.028;
-        // point on the quad at t=.5 — start of the lit outer half
-        const m0x=.25*rootx+.5*qcx+.25*tpx, m0y=.25*rooty+.5*qcy+.25*tpy;
-        ctx.lineCap='round';
-        ctx.globalAlpha=.85;
-        // pass 1: the whole blade in shadow green (root shaded under the lip)
-        ctx.beginPath();
-        ctx.moveTo(rootx,rooty);
-        ctx.quadraticCurveTo(qcx,qcy,tpx,tpy);
-        ctx.strokeStyle='rgba(100,160,60,.55)';
-        ctx.lineWidth=T*(.022+hb*.014);
-        ctx.stroke();
-        // pass 2: outer half lit — the blade drapes INTO the light
-        ctx.beginPath();
-        ctx.moveTo(m0x,m0y);
-        ctx.quadraticCurveTo(qcx,qcy,tpx,tpy);
-        ctx.strokeStyle='#9ac06a';
-        ctx.lineWidth=T*(.017+hb*.011);
-        ctx.stroke();
-        // v29d — root shadow: a small warm-dark patch where the blade
-        // emerges from the bank. Sells weight; reads as soil at the base.
-        ctx.fillStyle=(e.dA&&e.dA.length===3)?terrCol(e.dA):'rgba(0,0,0,.12)';
-        ctx.globalAlpha=.4;
-        ctx.beginPath();
-        ctx.ellipse(rootx-gxn*T*.012,rooty-gyn*T*.012,T*.030+hb*T*.008,T*.021+hb*T*.006,hb*3,0,7);
-        ctx.fill();
-        ctx.globalAlpha=.85;
-        tw+=.13+((hb*17)%1)*.21;
-        bi++;
-      }
-      // --- v30 layer 3.5: root tendrils ---
-      // Thin dark strokes dipping from under the lip into the dirt. The
-      // grass now visibly ROOTS into the soil instead of ending like a
-      // carpet edge. 0-2 per tile edge, hash-gated.
-      // v30d — all tendrils of an edge share style/width/alpha: one path,
-      // one stroke
-      ctx.strokeStyle=(e.dA&&e.dA.length===3)?terrCol(e.dA):'rgba(0,0,0,.12)';
-      ctx.globalAlpha=.5;
-      ctx.lineWidth=T*.026;
-      ctx.lineCap='round';
-      ctx.beginPath();
-      let tend=0;
-      for(let ri=0;ri<3;ri++){
-        const hr=_hash2(seed*97+ri*13,seed*41+ri*7);
-        if(hr<.5)continue;
-        const rt=.18+hr*.64;
-        const rx0=ax+spanX*rt+gxn*T*.02, ry0=ay+spanY*rt+gyn*T*.02;
-        const rl=T*(.06+((hr*11)%1)*.09);            // .06-.15T reach
-        const rs=(hr*7%1-.5)*T*.06;                  // sideways drift
-        // v31 — root tips drift in the wind (roots stay anchored, only the
-        // far end moves — a 0.02T drift, subtle on purpose)
-        const rv=window._wind?_wind(rx0,ry0,G.time)*T*.02:0;
-        ctx.moveTo(rx0,ry0);
-        ctx.quadraticCurveTo(rx0-gxn*rl*.45+ux*rs*.5,ry0-gyn*rl*.45+uy*rs*.5,
-                             rx0-gxn*rl+ux*(rs+rv),ry0-gyn*rl+uy*rv);
-        tend++;
-      }
-      if(tend)ctx.stroke();
-      ctx.globalAlpha=1;
-      // --- layer 5: bleed (crumbs onto grass / runners into dirt) ---
-      // v30f — boosted: the 'two flat textures' read needs VISIBLE
-      // cross-contamination at the seam
-      for(let i=0;i<4;i++){
-        const hb=_hash2(seed*77+i*3,seed*29+i*11);
-        if(hb<.33)continue;
-        const t=.15+hb*.7;
-        const lx=ax+spanX*t, ly=ay+spanY*t;
-        const ontoGrass=hb>.5;
-        const off=T*(.10+((hb*13)%1)*.13)*(ontoGrass?1:-1);
-        const px2=lx+gxn*off, py2=ly+gyn*off;
-        if(ontoGrass){
-          ctx.fillStyle=(e.dA&&e.dA.length===3)?terrCol(e.dA):'rgba(0,0,0,.12)';
-          ctx.globalAlpha=.8;
-          ctx.beginPath();ctx.ellipse(px2,py2,T*.034,T*.024,hb*3,0,7);ctx.fill();
-        }else{
-          ctx.fillStyle='#9ac06a';
-          ctx.globalAlpha=.75;
-          ctx.beginPath();ctx.ellipse(px2,py2,T*.036,T*.026,hb*3,0,7);ctx.fill();
-        }
-      }
-      ctx.globalAlpha=1;
-    }
   }
   ctx.lineWidth=lineW;
 }
@@ -3918,45 +3703,20 @@ function unlocked(t){const req=TOOLS[t]&&TOOLS[t].tech;if(!req)return true;if(t=
 function recipeUnlocked(r){return G.tech.has(RECIPE_TECH[r])}
 
 // ---------- audio ----------
-// v32 SOUND SATISFACTION OVERHAUL:
-//   * Reverb bus — every voice can send into a procedural convolver
-//     (1.15s warm plate IR) so sounds live in a space instead of a void.
-//   * Stereo placement — world sounds get a gentle random pan so a wide
-//     factory breathes across the speakers; UI sounds stay centered.
-//   * Layered voices — new primitives: _clink() (inharmonic metallic bell
-//     partials — real metal, not a sine "beep"), _thump() (mass: fast
-//     downward pitch sweep + click transient), _tick() (millisecond
-//     highpassed noise transient for definition).
-//   * Whooshes — noise() filters can sweep (open/close/flush/air).
-//   * Musical reward design — coins are a "ding-DING" perfect-fifth pair,
-//     tech/milestone/win are voiced bell chords with pads and shimmer.
-// Signal chain:  voice -> pan -> SFX_BUS -> COMP -> MASTER -> destination
-//                            \-> wet send -> REV_SEND -> REV_CONV -> REV_RET -> COMP
-let AC=null,MASTER=null,COMP=null,SFX_BUS=null,REV_SEND=null,REV_CONV=null,REV_RET=null;
+// Sound overhaul: master gain + dynamics compressor (limiter) to prevent
+// ear-splitting stacking, soft attack envelopes to eliminate clicks,
+// per-sound throttling so high-throughput factories don't machine-gun,
+// lowpass-filtered noise instead of harsh bandpass, and softer waveforms
+// throughout (sine/triangle instead of square/sawtooth).
+let AC=null,MASTER=null,COMP=null,SFX_BUS=null;
 // user-facing volume 0..1, persisted in save. Default 0.55 — loud enough to
 // hear the satisfying clink of a coin, soft enough to not fatigue over hours.
 let SFX_VOL=0.55;
-function makeIR(ac){
-  // Procedural impulse response: stereo noise, one-pole lowpassed (dark,
-  // warm tail — never hissy), exponential decay over ~1.15s.
-  try{
-    const sr=ac.sampleRate,n=Math.floor(sr*1.15),buf=ac.createBuffer(2,n,sr);
-    for(let ch=0;ch<2;ch++){
-      const d=buf.getChannelData(ch);let last=0;
-      for(let i=0;i<n;i++){
-        const t=i/n,w=Math.random()*2-1;
-        last+=.62*(w-last);
-        d[i]=last*Math.pow(1-t,2.6)*.55;
-      }
-    }
-    return buf;
-  }catch(e){return null}
-}
 function audio(){
   if(!AC){
     try{
       AC=new(window.AudioContext||window.webkitAudioContext)();
-      // signal chain:  source -> SFX_BUS -> COMP -> MASTER -> destination
+      // signal chain:  source → SFX_BUS → COMP → MASTER → destination
       //   SFX_BUS  : fixed unity gain, single attachment point for all SFX
       //   COMP     : dynamics compressor acting as a brick-wall limiter so
       //              20 simultaneous drill ticks can never exceed ~-12 dBFS
@@ -3972,15 +3732,6 @@ function audio(){
       SFX_BUS=AC.createGain();
       SFX_BUS.gain.value=1;
       SFX_BUS.connect(COMP);
-      // v32 reverb bus: per-voice wet sends land on REV_SEND, run through
-      // the procedural IR, and return at ~0.85 into the compressor.
-      try{
-        REV_CONV=AC.createConvolver();
-        REV_CONV.buffer=makeIR(AC);
-        REV_SEND=AC.createGain();REV_SEND.gain.value=1;
-        REV_RET=AC.createGain();REV_RET.gain.value=.85;
-        REV_SEND.connect(REV_CONV);REV_CONV.connect(REV_RET);REV_RET.connect(COMP);
-      }catch(e){REV_SEND=REV_CONV=REV_RET=null}
       COMP.connect(MASTER);
       MASTER.connect(AC.destination);
     }catch(e){}
@@ -3992,34 +3743,53 @@ function setSfxVol(v){
   if(MASTER&&AC)MASTER.gain.setTargetAtTime(SFX_VOL,AC.currentTime,0.02);
 }
 // soft attack envelope helper — eliminates the click that a hard step-on
-// causes on every oscillator start. attack of ~2-8 ms is inaudible as a
+// causes on every oscillator start. attack of ~8 ms is inaudible as a
 // separate event but completely removes the pop.
 function _env(g,t,vol,dur,atk){
   g.gain.setValueAtTime(0.0001,t);
   g.gain.linearRampToValueAtTime(vol,t+(atk||0.008));
   g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
 }
-// voice plumbing: optional stereo pan, dry connect to bus, and an absolute
-// wet send gain into the reverb. Every primitive routes through this.
-function _route(node,ac,bus,rev,send,pan){
-  let out=node;
-  if(pan&&ac.createStereoPanner){
-    try{const p=ac.createStereoPanner();p.pan.value=Math.max(-1,Math.min(1,pan));node.connect(p);out=p;}catch(e){}
-  }
-  out.connect(bus);
-  if(rev&&send>0){try{const w=ac.createGain();w.gain.value=send;out.connect(w);w.connect(rev);}catch(e){}}
+function tone(f0,f1,dur,type,vol,delay){
+  if(G.muted||!AC||!SFX_BUS||vol<=0)return;
+  try{
+    const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+(delay||0);
+    o.type=type;
+    o.frequency.setValueAtTime(f0,t);
+    if(f1!==f0)o.frequency.exponentialRampToValueAtTime(Math.max(f1,1),t+dur);
+    _env(g,t,vol,dur);
+    o.connect(g);g.connect(SFX_BUS);
+    o.start(t);o.stop(t+dur+.02);
+  }catch(e){}
 }
-// gentle random pan for WORLD sounds (machines spread across the map);
-// UI sounds stay centered. ±.22 is spacious without ever losing focus.
-function _wpan(){return (Math.random()*2-1)*.22}
+// noise() now defaults to a lowpass filter (much softer texture than the old
+// bandpass at 260 Hz which was grating and buzzy). pass filt=0 for raw.
+function noise(dur,vol,filt,delay){
+  if(G.muted||!AC||!SFX_BUS||vol<=0)return;
+  try{
+    const t=AC.currentTime+(delay||0);
+    const n=Math.floor(AC.sampleRate*dur);
+    const buf=AC.createBuffer(1,n,AC.sampleRate),d=buf.getChannelData(0);
+    for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);
+    const src=AC.createBufferSource();src.buffer=buf;
+    const g=AC.createGain();
+    _env(g,t,vol,dur,0.004);
+    if(filt){
+      const f=AC.createBiquadFilter();
+      f.type='lowpass';
+      f.frequency.value=filt;
+      f.Q.value=0.7;            // gentle roll-off, no resonance spike
+      src.connect(f);f.connect(g);
+    }else src.connect(g);
+    g.connect(SFX_BUS);
+    src.start(t);src.stop(t+dur+.02);
+  }catch(e){}
+}
 // per-sound throttle: each SFX has a minimum spacing. calls within the
 // window are silently dropped — this is what saves your ears on a 30-drill
 // or 50-seller map. _sfxLast[key]=timestamp of last allowed fire.
 const _sfxLast={};
 function _throttle(key,ms){
-  // muted = nothing would spawn, so don't consume the window either —
-  // the first sound after unmute always fires immediately.
-  if(typeof G!=='undefined'&&G.muted)return false;
   const now=performance.now();
   if(_sfxLast[key]&&now-_sfxLast[key]<ms)return false;
   _sfxLast[key]=now;return true;
@@ -4027,280 +3797,57 @@ function _throttle(key,ms){
 // tiny pitch jitter to make rapidly-repeating sounds feel organic rather
 // than mechanical. ±4% sounds human, not random.
 function _jit(base,pct){return base*(1+(Math.random()*2-1)*(pct||0.04));}
-// QA/observability hook — counts every voice the engine actually spawns
-// (post-mute-guard), reports engine state, and renders voices offline.
-window.__snd={
-  calls:{tone:0,noise:0,clink:0,thump:0,tick:0},
-  reset(){this.calls={tone:0,noise:0,clink:0,thump:0,tick:0}},
-  state(){return{
-    ac:AC?AC.state:'none',rev:!!(REV_CONV&&REV_SEND&&REV_RET),
-    irLen:REV_CONV&&REV_CONV.buffer?+REV_CONV.buffer.duration.toFixed(2):0,
-    master:MASTER?+MASTER.gain.value.toFixed(3):-1,comp:!!COMP}},
-  // Offline render for acoustic verification: builds a private graph with
-  // the SAME makeIR generator; fn({ac,bus,rev}) fires voices with
-  // {_ac,_bus,_rev} overrides, exercising the real synthesis code paths.
-  // Returns {peak,rms,zcr,dur,prof[20]} — prof = normalized energy per
-  // 1/20th of the render (the "envelope fingerprint" of the sound).
-  render(fn,dur){
-    try{
-      const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
-      const ctx=new OAC(2,Math.ceil(44100*dur),44100);
-      const bus=ctx.createGain();bus.connect(ctx.destination);
-      const conv=ctx.createConvolver();conv.buffer=makeIR(ctx);
-      const send=ctx.createGain();send.gain.value=1;
-      send.connect(conv);conv.connect(ctx.destination);
-      fn({ac:ctx,bus:bus,rev:send});
-      return ctx.startRendering().then(function(buf){
-        const L=buf.getChannelData(0),R=buf.getChannelData(1),n=L.length;
-        let peak=0,rms=0,zi=0;
-        const W=20,wn=Math.floor(n/W),wins=new Array(W).fill(0);
-        for(let i=0;i<n;i++){
-          const a=(Math.abs(L[i])+Math.abs(R[i]))*.5;
-          if(a>peak)peak=a;
-          rms+=L[i]*L[i];
-          if(i>0&&(L[i]>=0)!==(L[i-1]>=0))zi++;
-          const w=Math.min(W-1,Math.floor(i/wn));
-          wins[w]+=L[i]*L[i]+R[i]*R[i];
-        }
-        rms=Math.sqrt(rms/n);
-        let wmax=0;for(let k=0;k<W;k++)if(wins[k]>wmax)wmax=wins[k];
-        const prof=wins.map(w2=>+(w2/(wmax||1)).toFixed(3));
-        return{peak:+peak.toFixed(4),rms:+rms.toFixed(4),zcr:+(zi/n).toFixed(4),dur:buf.duration,prof:prof};
-      });
-    }catch(e){return Promise.resolve({err:String(e)})}
-  }
-};
-function tone(f0,f1,dur,type,vol,delay,opts){
-  const o=opts||{};
-  const ac=o._ac||AC,bus=o._bus||SFX_BUS,rev=(o._rev!==undefined)?o._rev:REV_SEND;
-  if(G.muted||!ac||!bus||vol<=0)return;
-  try{
-    window.__snd.calls.tone++;
-    const os=ac.createOscillator(),g=ac.createGain(),t=ac.currentTime+(delay||0);
-    os.type=type;
-    os.frequency.setValueAtTime(f0,t);
-    if(f1!==f0)os.frequency.exponentialRampToValueAtTime(Math.max(f1,1),t+dur);
-    _env(g,t,vol,dur,o.atk);
-    _route(g,ac,bus,rev,vol*(o.wet||0),o.pan);
-    os.connect(g);os.start(t);os.stop(t+dur+.02);
-  }catch(e){}
-}
-// noise burst; filt = filter cutoff (falsy = raw). opts: {type:'lowpass'(def)
-// |'highpass'|'bandpass', q, sweepTo (filter freq ramps to this — whooshes),
-// wet, pan, atk}. The linear amplitude fade baked into the buffer plus the
-// exponential envelope keeps every burst click-free at the edges.
-function noise(dur,vol,filt,delay,opts){
-  const o=opts||{};
-  const ac=o._ac||AC,bus=o._bus||SFX_BUS,rev=(o._rev!==undefined)?o._rev:REV_SEND;
-  if(G.muted||!ac||!bus||vol<=0)return;
-  try{
-    window.__snd.calls.noise++;
-    const t=ac.currentTime+(delay||0);
-    const n=Math.floor(ac.sampleRate*dur);
-    const buf=ac.createBuffer(1,n,ac.sampleRate),d=buf.getChannelData(0);
-    for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);
-    const src=ac.createBufferSource();src.buffer=buf;
-    const g=ac.createGain();
-    _env(g,t,vol,dur,.004);
-    if(filt){
-      const f=ac.createBiquadFilter();
-      f.type=o.type||'lowpass';
-      f.frequency.setValueAtTime(filt,t);
-      if(o.sweepTo)f.frequency.exponentialRampToValueAtTime(Math.max(o.sweepTo,20),t+dur);
-      f.Q.value=o.q||.7;
-      src.connect(f);f.connect(g);
-    }else src.connect(g);
-    _route(g,ac,bus,rev,vol*(o.wet||0),o.pan);
-    src.start(t);src.stop(t+dur+.02);
-  }catch(e){}
-}
-// METAL — a bell/coin voice: 4 inharmonic partials (1 : 2.83 : 5.36 : 8.94 —
-// real struck-metal ratios, not the harmonic series), each with its own
-// decay (high partials die fast), micro-detuned per strike. This is what
-// makes a coin sound like a coin instead of a sine beep.
-function _clink(f,vol,delay,opts){
-  const o=opts||{};
-  const ac=o._ac||AC,bus=o._bus||SFX_BUS,rev=(o._rev!==undefined)?o._rev:REV_SEND;
-  if(G.muted||!ac||!bus||vol<=0)return;
-  try{
-    window.__snd.calls.clink++;
-    const t=ac.currentTime+(delay||0),dur=o.dur||.32;
-    const R=[1,2.83,5.36,8.94],V=[.85,.42,.22,.1],D=[1,.5,.3,.18];
-    let mix=null;
-    for(let i=0;i<4;i++){
-      const os=ac.createOscillator(),g=ac.createGain();
-      os.type='sine';
-      os.frequency.value=f*R[i]*_jit(1,.006);
-      _env(g,t,vol*V[i],Math.max(dur*D[i],.02),.002);
-      os.connect(g);
-      if(!mix)mix=ac.createGain();
-      g.connect(mix);
-      os.start(t);os.stop(t+dur+.02);
-    }
-    if(mix)_route(mix,ac,bus,rev,vol*(o.wet||0),o.pan);
-  }catch(e){}
-}
-// MASS — an impact: a fast downward sine sweep (the "weight" of a dropped
-// object lives in the pitch drop) + a millisecond click for the contact
-// transient. Used for placements, errors, timpani accents.
-function _thump(vol,delay,opts){
-  const o=opts||{};
-  const ac=o._ac||AC,bus=o._bus||SFX_BUS,rev=(o._rev!==undefined)?o._rev:REV_SEND;
-  if(G.muted||!ac||!bus||vol<=0)return;
-  try{
-    window.__snd.calls.thump++;
-    const t=ac.currentTime+(delay||0),dur=o.dur||.16;
-    const os=ac.createOscillator(),g=ac.createGain();
-    os.type='sine';
-    os.frequency.setValueAtTime(o.f0||165,t);
-    os.frequency.exponentialRampToValueAtTime(o.f1||46,t+(o.drop||.085));
-    _env(g,t,vol,dur,.003);
-    _route(g,ac,bus,rev,vol*(o.wet||0),o.pan);
-    os.connect(g);os.start(t);os.stop(t+dur+.02);
-  }catch(e){}
-  _tick(vol*.55,delay,{_ac:ac,_bus:bus,_rev:rev,hp:2400,pan:o.pan});
-}
-// TRANSIENT — a 6ms highpassed noise crack: the "definition" layer that
-// gives clicks, drills and switches their edge. Nearly invisible alone.
-function _tick(vol,delay,opts){
-  const o=opts||{};
-  const ac=o._ac||AC,bus=o._bus||SFX_BUS,rev=(o._rev!==undefined)?o._rev:REV_SEND;
-  if(G.muted||!ac||!bus||vol<=0)return;
-  try{
-    window.__snd.calls.tick++;
-    const t=ac.currentTime+(delay||0),dur=.006;
-    const n=Math.floor(ac.sampleRate*dur);
-    const buf=ac.createBuffer(1,n,ac.sampleRate),d=buf.getChannelData(0);
-    for(let i=0;i<n;i++)d[i]=(Math.random()*2-1);
-    const src=ac.createBufferSource();src.buffer=buf;
-    const g=ac.createGain();
-    g.gain.setValueAtTime(vol,t);
-    g.gain.exponentialRampToValueAtTime(.0001,t+dur);
-    const f=ac.createBiquadFilter();
-    f.type='highpass';f.frequency.value=o.hp||3200;f.Q.value=.7;
-    src.connect(f);f.connect(g);
-    _route(g,ac,bus,rev,vol*(o.wet||0),o.pan);
-    src.start(t);src.stop(t+dur+.01);
-  }catch(e){}
-}
-// drill strike alternator — two ping registers so a running drillfield
-// goes chk-CHK chk-CHK instead of a machine-gun monotone.
-let _drillAlt=false;
-const SFX={  // PLACE — setting a machine down: mass hits the ground, wood settles.
-  place:()=>{if(!_throttle('place',40))return;
-    _thump(.15);
-    tone(240,150,.06,'triangle',.05,.004,{wet:.05});
-    _tick(.03,.002,{hp:1800});},
-  // BELT — buckle snap: transient + faint metal.
-  belt:()=>{if(!_throttle('belt',55))return;
-    _tick(.035,0,{pan:_wpan()});
-    _clink(_jit(2200,.05),.018,0,{pan:_wpan(),dur:.1});},
-  // COIN — the flagship. Metallic "ding-DING" perfect fifth (the two-note
-  // school of coin design), each strike micro-detuned so cascades shimmer,
-  // with a soft body tone underneath for weight.
-  coin:()=>{if(!_throttle('coin',70))return;
-    const p=_wpan();
-    _clink(_jit(1046,.004),.09,0,{pan:p,wet:.22});
-    _clink(_jit(1568,.004),.07,.058,{pan:p,wet:.22});
-    tone(523,392,.05,'sine',.028,0,{pan:p});},
-  // BIG SALE — pad swell under an ascending bell cascade + octave shimmer.
-  big:()=>{if(!_throttle('big',160))return;
-    tone(392,392,.5,'sine',.035,0,{wet:.35,atk:.09});
-    tone(196,196,.55,'sine',.03,0,{wet:.3,atk:.11});
-    _clink(523,.06,.02,{wet:.3});_clink(659,.06,.10,{wet:.3});
-    _clink(784,.055,.18,{wet:.3});_clink(1046,.045,.27,{wet:.35});},
-  // UPGRADE — ratchet zip up + bell confirm at the top.
-  up:()=>{if(!_throttle('up',80))return;
-    _tick(.05,0);_tick(.04,.05);
-    tone(_jit(420),940,.17,'triangle',.045,.02,{pan:_wpan()});
-    _clink(1245,.05,.17,{wet:.25});},
-  // ERROR — "uh-uh": two muted descending thuds, the second lower.
-  err:()=>{if(!_throttle('err',120))return;
-    tone(150,110,.10,'triangle',.06,0);
-    tone(110,78,.12,'triangle',.055,.10);
-    _thump(.06,.10);},
-  // FEED — tiny gulp as a machine accepts an item (kept very quiet and
-  // heavily throttled: this is the most frequent sound in the game).
-  feed:()=>{if(!_throttle('feed',140))return;
-    noise(.03,.018,650,0,{pan:_wpan()});
-    tone(340,215,.045,'sine',.02,0,{pan:_wpan()});},
-  // CRAFT — hammer tink + forge hiss.
-  craft:()=>{if(!_throttle('craft',90))return;
-    _clink(_jit(880,.01),.05,0,{pan:_wpan(),wet:.15});
-    noise(.12,.02,4200,.035,{type:'highpass',pan:_wpan()});},
-  // SCRAP — debris crunch: three staggered grit bursts + a thud. Real
-  // crunch is multiple micro-impacts, not one noise blob.
-  scrap:()=>{if(!_throttle('scrap',90))return;
-    const p=_wpan();
-    noise(.06,.05,_jit(750,.3),0,{pan:p});
-    noise(.05,.04,_jit(1050,.3),.04,{pan:p});
-    noise(.07,.028,_jit(520,.3),.085,{pan:p});
-    _thump(.07,.01);},
-  // FLUSH — liquid drain: the lowpass sweeps down while a sine falls with it.
-  flush:()=>{if(!_throttle('flush',110))return;
-    noise(.22,.045,1500,0,{sweepTo:280,pan:_wpan()});
-    tone(260,118,.18,'sine',.035,0,{pan:_wpan()});},
-  // TECH UNLOCK — research chime: warm pad under a bell triad + shimmer.
-  tech:()=>{if(!_throttle('tech',150))return;
-    tone(262,262,.55,'sine',.028,0,{wet:.35,atk:.08});
-    _clink(523,.07,.02,{wet:.3});_clink(659,.07,.14,{wet:.3});
-    _clink(784,.065,.26,{wet:.3});_clink(1046,.04,.42,{wet:.35});},
-  // DEPLETE — the vein gives out: falling tone + rumble (reserved).
-  deplete:()=>{if(!_throttle('deplete',250))return;
-    tone(200,70,.34,'triangle',.07,0,{pan:_wpan()});
-    noise(.3,.03,220,0,{pan:_wpan()});},
-  // WIN — fanfare: twin pads, bell arpeggio, final chord stack, timpani
-  // under the root, and a high shimmer to close.
-  win:()=>{if(!_throttle('win',400))return;
-    tone(262,262,.9,'sine',.032,0,{wet:.4,atk:.1});
-    tone(392,392,.9,'sine',.026,0,{wet:.4,atk:.12});
-    [523,659,784,1046,1318].forEach((f,i)=>_clink(f,.06,i*.11,{wet:.35}));
-    _clink(1046,.05,.62,{wet:.4});_clink(1318,.045,.62,{wet:.4});
-    _clink(1568,.04,.63,{wet:.4});_clink(2093,.03,.75,{wet:.4});
-    _thump(.09,.60);},
-  // DRILL — rock bite: crack + grit + faint metallic ping. Alternates two
-  // ping registers every strike (see _drillAlt).
-  drill:()=>{if(!_throttle('drill',90))return;
-    _drillAlt=!_drillAlt;
-    const p=_wpan();
-    _tick(.03,0,{pan:p});
-    noise(.045,.028,_jit(1500,.25),0,{pan:p});
-    tone(_jit(_drillAlt?2900:2300,.2),_jit(_drillAlt?2400:1850,.2),.02,'sine',.007,0,{pan:p});},
-  // SMELT — furnace: low rumble + sine body + two crackle ticks.
-  smelt:()=>{if(!_throttle('smelt',150))return;
-    const p=_wpan();
-    noise(.16,.028,320,0,{pan:p});
-    tone(150,118,.12,'sine',.02,0,{pan:p});
-    _tick(.008,.06);_tick(.006,.11);},
-  // SELECT — snick + rising pitch pop.
-  select:()=>{if(!_throttle('select',45))return;
-    _tick(.032,0);
-    tone(_jit(620),890,.045,'triangle',.04,0);},
-  // OPEN / CLOSE — air whooshes in opposite directions (filter sweeps).
-  open:()=>{if(!_throttle('open',100))return;
-    noise(.13,.03,420,0,{sweepTo:1700});
-    tone(340,560,.12,'sine',.04,0);},
-  close:()=>{if(!_throttle('close',100))return;
-    noise(.10,.028,1500,0,{sweepTo:380});
-    tone(520,300,.10,'sine',.04,0);},
-  // PICKUP — water-drop blip (reserved).
-  pickup:()=>{if(!_throttle('pickup',65))return;
-    tone(660,1250,.035,'sine',.03,0);},
-  // ALLOY — two metals converge from opposite sides, then fuse into one bell.
-  alloy:()=>{if(!_throttle('alloy',120))return;
-    tone(220,440,.12,'triangle',.055,0,{pan:-.2});
-    tone(880,440,.10,'sine',.03,.04,{pan:.2});
-    _clink(660,.05,.13,{wet:.25});_clink(1320,.03,.19,{wet:.3});},
-  // MILESTONE — mini-fanfare: bells over a pad, timpani under the root.
-  milestone:()=>{if(!_throttle('milestone',350))return;
-    tone(330,330,.6,'sine',.026,0,{wet:.3,atk:.08});
-    [659,784,988].forEach((f,i)=>_clink(f,.065,i*.08,{wet:.3}));
-    _clink(1318,.05,.26,{wet:.35});
-    _thump(.07,.02);},
-  // HOVER — near-silent tick (reserved).
+const SFX={
+  // placement: a soft thock + sub-bass tap. was 0.22+0.14=0.36 → now 0.14+0.08=0.22
+  place:()=>{if(!_throttle('place',40))return;tone(170,80,.13,'triangle',.14);tone(90,60,.10,'sine',.08,.02)},
+  // belt placement: ultra-soft tick. was 0.10 → now 0.05
+  belt:()=>{if(!_throttle('belt',55))return;tone(_jit(320),260,.05,'triangle',.05)},
+  // coin sale: brightened pitch (more "ding", less "thud"), halved volume.
+  // was 0.15+0.13=0.28 → now 0.07+0.05=0.12
+  coin:()=>{if(!_throttle('coin',70))return;tone(880,880,.05,'sine',.07);tone(1320,1320,.07,'sine',.05,.04)},
+  // flagship item sale: gentle major arpeggio, was 0.45 total → now 0.18 total
+  big:()=>{if(!_throttle('big',160))return;tone(523,523,.09,'sine',.07);tone(659,659,.09,'sine',.07,.07);tone(784,784,.14,'sine',.07,.14)},
+  // machine upgrade: smoother triangle sweep replacing the harsh sawtooth.
+  // was 0.10+0.08=0.18 → now 0.06+0.04=0.10
+  up:()=>{if(!_throttle('up',80))return;tone(330,660,.16,'triangle',.06);tone(660,1100,.14,'sine',.04,.06)},
+  // error: soft low triangle thunk (was square at .12 — buzzy and grating)
+  err:()=>{if(!_throttle('err',120))return;tone(170,130,.12,'triangle',.07);tone(110,85,.10,'sine',.05,.02)},
+  // FEED — the worst offender. fires every time any machine accepts an item.
+  // was 95Hz square at .15 = constant aggressive buzzing. now a very short,
+  // very soft sine tick at a higher register (less masking of music/speech),
+  // throttled to max ~7/sec globally.
+  feed:()=>{if(!_throttle('feed',140))return;tone(_jit(540),520,.03,'sine',.025)},
+  // craft: gentle triangle+sine chime. was 0.20 → now 0.10
+  craft:()=>{if(!_throttle('craft',90))return;tone(330,520,.10,'triangle',.06);tone(520,700,.07,'sine',.04,.06)},
+  // scrap: soft low triangle + lowpass noise (was sawtooth at .12 + bandpass noise)
+  scrap:()=>{if(!_throttle('scrap',90))return;tone(200,80,.13,'triangle',.07);noise(.09,.035,900,.02)},
+  // flush: smooth low triangle sweep (was sawtooth)
+  flush:()=>{if(!_throttle('flush',110))return;tone(300,140,.16,'triangle',.06)},
+  // tech unlock: bright major triad, was 0.42 → now 0.21
+  tech:()=>{if(!_throttle('tech',150))return;tone(392,392,.11,'sine',.08);tone(523,523,.11,'sine',.08,.10);tone(659,659,.17,'sine',.08,.20)},
+  // ore depletion: long low triangle fade (was 0.14)
+  deplete:()=>{if(!_throttle('deplete',250))return;tone(180,80,.30,'triangle',.08)},
+  // win: triumphant arpeggio, was 0.80 total → now 0.35 total
+  win:()=>{if(!_throttle('win',400))return;[523,659,784,1046,1318].forEach((f,i)=>tone(f,f,.24,'sine',.07,i*.12))},
+  // DRILL — second-worst offender. was bandpass noise at 260 Hz (buzzy).
+  // now lowpass at 1800 Hz = a soft "tick" texture. Throttled to ~11/sec max.
+  drill:()=>{if(!_throttle('drill',90))return;noise(.05,.025,1800,0)},
+  // smelt: low furnace rumble (was bandpass 520 + sawtooth — now lowpass 900 + sine)
+  smelt:()=>{if(!_throttle('smelt',150))return;noise(.13,.022,900,0);tone(180,140,.09,'sine',.025)},
+  // UI select: very soft triangle click (was 0.10)
+  select:()=>{if(!_throttle('select',45))return;tone(520,640,.04,'triangle',.045)},
+  // panel open/close: soft sine whoosh (volumes halved)
+  open:()=>{if(!_throttle('open',100))return;tone(320,560,.11,'sine',.06);tone(440,800,.09,'sine',.035,.04)},
+  close:()=>{if(!_throttle('close',100))return;tone(560,300,.09,'sine',.05)},
+  // pickup: tiny sine blip (was 0.07 — already OK, just halve it)
+  pickup:()=>{if(!_throttle('pickup',65))return;tone(660,720,.025,'sine',.025)},
+  // alloy fused: gentle triangle+sine, was 0.21 → now 0.11
+  alloy:()=>{if(!_throttle('alloy',120))return;tone(220,440,.12,'triangle',.07);tone(440,330,.10,'sine',.04,.06)},
+  // milestone: shorter arpeggio, was 0.56 → now 0.28
+  milestone:()=>{if(!_throttle('milestone',350))return;[659,784,988,1318].forEach((f,i)=>tone(f,f,.18,'sine',.07,i*.09))},
+  // hover tick: nearly silent, was 0.04 → now 0.015, tighter throttle
   hoverTick:()=>{if(!_throttle('hoverTick',35))return;tone(800,800,.012,'sine',.015)}
 };
-window.__SFX=SFX;   // console + QA access to the sound palette
 
 // ============================================================
 //  FX — centralized animation helpers (GSAP-powered)
@@ -4660,177 +4207,21 @@ function drawVeins(time){
     //      own chunk — the ground shadow is the UNION of chunk silhouettes
     //      and conforms to the cluster; front chunks' shadows land on top
     //      of back chunks (correct occlusion).
-    //   v30 — the pocket is a WOBBLY BLOB (10-sample radial noise; no more
-    //   "magic circles"), and each chunk gets a SOIL MOUND drawn in front
-    //   of it: the rock's own bottom edge disappears behind a lip of
-    //   earth = it is actually BURIED, not stickered onto the dirt.
     const liPad=layerInfoAt(c.depth||1);
     const darkA=liPad?liPad.type.dark:[92,92,92];
-    const warmA=liPad?liPad.type.base:[140,140,140];
-    const pzx=cx, pzy=cy+T*.035;
-    // v29f — per-vein irregularity: hash-driven rotation and aspect jitter
-    // so pockets are never perfect stamped circles
-    const pRot=((h%628)/628)*.5-.25;                       // +-.25 rad
-    const RX=T*(.40-.032+((h>>4)%9)/8*.064);              // .368-.432T
-    const RY=T*(.32-.026+((h>>9)%7)/6*.052);              // .294-.346T
-    // v30 — WOBBLY BLOB pocket. The v29 concentric ellipses (even with
-    // hash rotation) still read as "magic circles" — perfect targets
-    // painted on the ground. The outline is sampled at 10 angles with
-    // hash-noise radii and drawn as a smooth closed blob; the depth rings
-    // are the SAME blob scaled toward the center, so the pit's lobes stay
-    // coherent from rim to core. Far zoom falls back to two cheap ellipse
-    // fills (v29 drew four — this is FASTER at range).
-    // v30b — the blob geometry is frame-invariant (a pure hash of the
-    // cell), so the ring/rim Path2D objects are built ONCE per cell and
-    // cached on it. Path2D is mapped by the CTM at draw time, so one build
-    // serves every frame and camera transform (the v29c grass-lip trick).
-    // Guarded with !bl.rings because a save/load round-trip can leave a
-    // stripped {} behind on the cell.
-    let bl=c._v30blob;
-    if(!bl||!bl.rings){
-      const nS=10;
-      const bCA=Math.cos(pRot), bSA=Math.sin(pRot);
-      const rp=[];
-      for(let si=0;si<nS;si++){
-        const ang=si/nS*Math.PI*2;
-        const wob=1+(_hash2((h%613)+si*17,(h%389)+si*29)-.5)*2*.16;
-        const ex=Math.cos(ang)*RX*wob, ey=Math.sin(ang)*RY*wob;
-        rp.push([pzx+ex*bCA-ey*bSA, pzy+ex*bSA+ey*bCA]);
-      }
-      const sp=(p,k)=>[pzx+(p[0]-pzx)*k, pzy+(p[1]-pzy)*k];
-      function mkClosed(k){
-        const P=new Path2D();
-        const n=rp.length;
-        const pA=sp(rp[n-1],k), pB=sp(rp[0],k);
-        P.moveTo((pA[0]+pB[0])/2,(pA[1]+pB[1])/2);
-        for(let i=0;i<n;i++){
-          const c2=sp(rp[i],k), nx=sp(rp[(i+1)%n],k);
-          P.quadraticCurveTo(c2[0],c2[1],(c2[0]+nx[0])/2,(c2[1]+nx[1])/2);
-        }
-        P.closePath();
-        return P;
-      }
-      function mkOpen(k,i0,i1){
-        const P=new Path2D();
-        const n=rp.length;
-        const p0=sp(rp[i0%n],k);
-        P.moveTo(p0[0],p0[1]);
-        for(let i=i0;i<i1;i++){
-          const c2=sp(rp[i%n],k), nx=sp(rp[(i+1)%n],k);
-          P.quadraticCurveTo(c2[0],c2[1],(c2[0]+nx[0])/2,(c2[1]+nx[1])/2);
-        }
-        const pe=sp(rp[i1%n],k);
-        P.lineTo(pe[0],pe[1]);
-        return P;
-      }
-      bl=c._v30blob={rings:[mkClosed(1),mkClosed(.72),mkClosed(.48)],
-                     rimFar:mkOpen(1,5,10), rimNear:mkOpen(.96,0,5)};
-    }
-    if(T*G.cam.zoom>=100){
-      ctx.fillStyle=terrCol(darkA);
-      for(let ri=0;ri<3;ri++){
-        ctx.globalAlpha=.10;
-        ctx.fill(bl.rings[ri]);
-      }
-    }else if(T*G.cam.zoom>=60){
-      // mid zoom: no rims/mounds (bezier cost), but the EXCAVATION CONTEXT
-      // must still read — three blob rings with a stronger core so the
-      // pocket halo is visible at 60-100px tiles (VLM: 'no crater edge at
-      // medium zoom — add a darkened contact halo').
-      ctx.fillStyle=terrCol(darkA);
-      ctx.globalAlpha=.16;
-      ctx.fill(bl.rings[0]);
-      ctx.globalAlpha=.13;
-      ctx.fill(bl.rings[1]);
-      ctx.globalAlpha=.10;
-      ctx.fill(bl.rings[2]);
-    }else{
-      ctx.fillStyle=terrCol(darkA);
-      ctx.globalAlpha=.18;
-      ctx.beginPath();ctx.ellipse(pzx,pzy,RX,RY,pRot,0,7);ctx.fill();
-      ctx.globalAlpha=.10;
-      ctx.beginPath();ctx.ellipse(pzx,pzy,RX*.6,RY*.6,pRot,0,7);ctx.fill();
-    }
-    if(T*G.cam.zoom>=100){
-      // v29e — crater rims: the far (top) inner wall is dark — a hard-ish
-      // edge where the hole meets undisturbed dirt; the near (bottom) lip
-      // is lit where dirt was pushed up. Together they define the crater.
-      // v30c: >=100px only (rim strokes over the blob's beziers are the
-      // single most expensive vein op at mid zoom).
-      // v30 — rims follow the BLOB outline, not an ellipse (the old
-      // elliptical rim arcs contradicted the blob fill underneath)
-      ctx.strokeStyle=terrCol(darkA);
-      ctx.globalAlpha=.25;
-      ctx.lineWidth=T*.045;
-      ctx.stroke(bl.rimFar);                           // far wall (top arc)
-      // lit front lip — bottom rim of the pocket
-      ctx.strokeStyle=terrCol(warmA);
-      ctx.globalAlpha=.5;
-      ctx.lineWidth=T*.07;
-      ctx.stroke(bl.rimNear);                          // near lip (bottom arc)
-      // crumbs just outside the front rim
-      ctx.fillStyle=terrCol(darkA);
-      for(let i=0;i<3;i++){
-        const hb=_hash2((h%997)+i*31,(h%771)+i*17);
-        if(hb<.45)continue;
-        const ang=Math.PI*(.18+hb*.64)+pRot;
-        const crx=pzx+Math.cos(ang)*RX*1.07, cry=pzy+Math.sin(ang)*RY*1.07;
-        ctx.globalAlpha=.5;
-        ctx.beginPath();ctx.ellipse(crx,cry,T*.024,T*.017,hb*3,0,7);ctx.fill();
-      }
-    }
-    ctx.globalAlpha=1;
+    // v34 — FLAT ORE GROUNDING: the v29 nestled pocket (4 nested rings,
+    // crater far-wall, lit lip, crumbs) is removed — the user wants flat.
+    // Chunks sit directly on the layer-colored dirt with one soft contact
+    // shadow each (chunk loop below). Breathing idle + sprites untouched.
     for(const chunk of offsets){
-      // per-chunk contact shadow — fixed per chunk; the breathing chunk
-      // floats above it without wobbling the ground
-      // v29f — the crescent must peek BELOW the chunk silhouette: the
-      // sprite covers to +.9r, so the ellipse sits at +.8r with ry .34r
-      // (upper half hidden behind the rock = hugging contact; the part
-      // past +.9r is the visible dark crescent where rock meets dirt).
-      // two passes at .5 -> .75 cumulative: a high-contrast anchor with
-      // punch (the single pass read "ambient and diffuse" — buoyant rocks)
+      // per-chunk contact shadow — one flat dark crescent peeking below the
+      // chunk silhouette (v34: single soft pass; the chunk breathes above a
+      // steady shadow, and the ground stays clean flat dirt)
       ctx.fillStyle=terrCol(darkA);
-      for(let ci=0;ci<2;ci++){
-        ctx.globalAlpha=.5;
-        ctx.beginPath();ctx.ellipse(chunk.x+chunk.r*.1,chunk.y+chunk.r*.82,chunk.r*1.04,chunk.r*.5,0,0,7);ctx.fill();
-      }
+      ctx.globalAlpha=.35;
+      ctx.beginPath();ctx.ellipse(chunk.x+chunk.r*.1,chunk.y+chunk.r*.82,chunk.r*1.04,chunk.r*.5,0,0,7);ctx.fill();
       ctx.globalAlpha=1;
       oreChunk(ctx,chunk.x,chunk.y,chunk.r,chunk.a,C,shape,baseGlow);
-      // v30 — SOIL MOUND in front of the chunk. A lumpy patch of layer
-      // dirt drawn OVER the rock's lower part, so the ore is visibly
-      // BEHIND a lip of earth — the single strongest "buried, not
-      // stickered" cue: the rock's own bottom edge disappears into the
-      // soil. Drawn back-to-front with the chunks, so front chunks'
-      // mounds correctly overlap back chunks. (v30c: >=100px — at mid
-      // zoom the mound is <10px and reads as noise, not grounding.)
-      if(T*G.cam.zoom>=100){
-        const hg=_hash2((h%503)+Math.round(chunk.x*7),(h%307)+Math.round(chunk.y*11));
-        const mw=chunk.r*(1.08+((hg*7)%1)*.30);        // mound width 1.08-1.38r
-        const myO=chunk.r*(.58+((hg*11)%1)*.13);       // center .58-.71r below chunk ctr
-        const mh=chunk.r*(.48+((hg*13)%1)*.16);        // height .48-.64r
-        const mrot=(hg*3%1-.5)*.5;                     // +- .25 rad tilt
-        const mx=chunk.x+chunk.r*(.06+(hg*5%1-.5)*.12);// slight lateral drift
-        ctx.globalAlpha=1;
-        ctx.fillStyle=terrCol(warmA);
-        ctx.beginPath();ctx.ellipse(mx,chunk.y+myO,mw,mh,mrot,0,7);ctx.fill();
-        // seam + crumb are close-up detail — invisible below ~100px tiles
-        // but not free; skipped at mid zoom (v30b perf)
-        if(T*G.cam.zoom>=100){
-          // dark seam where the mound crest meets the rock
-          ctx.strokeStyle=terrCol(darkA);
-          ctx.globalAlpha=.4;
-          ctx.lineWidth=T*.02;
-          ctx.beginPath();ctx.ellipse(mx,chunk.y+myO,mw,mh,mrot,Math.PI*1.06,Math.PI*1.94);ctx.stroke();
-          // a crumb of displaced soil on the mound
-          if(hg>.45){
-            ctx.fillStyle=terrCol(darkA);
-            ctx.globalAlpha=.5;
-            const cang=Math.PI*(1.15+(hg*9%1)*.7)+mrot;
-            ctx.beginPath();ctx.ellipse(mx+Math.cos(cang)*mw*.6,chunk.y+myO+Math.sin(cang)*mh*.55,T*.02,T*.014,hg*3,0,7);ctx.fill();
-          }
-        }
-        ctx.globalAlpha=1;
-      }
     }
     ctx.restore();
   }
@@ -6328,6 +5719,8 @@ function rollNewOres(minX,minY,maxX,maxY,boost){
 function genTerrain(){
   _terrainCache.clear();          // clear cached terrain colors so a new game uses fresh layer colors
   _waterCache.clear();            // clear water cache — seed is about to change
+  _wFast.clear();                 // v35c — far-zoom water paints depend on the seed too
+  _wDens.clear();                 // v36 — smooth-depth densities are seed-dependent too
   G.waterSeed=Math.random();      // new rivers each game
   G.grid=[];
   for(let y=0;y<G.N;y++){G.grid[y]=[];for(let x=0;x<G.N;x++)G.grid[y][x]=blankCell()}
@@ -6357,22 +5750,40 @@ function genTerrain(){
 // makes that contour fractal and broken (scattered dots). Domain warping
 // (offsetting the sample position by a second noise) makes rivers meander.
 const _waterCache=new Map();
+// v35c — far-zoom water paint cache: per-tile {base fill, corner flags,
+// prefill color}. Water is a pure function of the save seed, so entries
+// are static between seed changes (cleared in genTerrain, evicted at 20k).
+const _wFast=new Map();
 // Helper: one river field at a given offset. Returns true if (x,y) is in
 // this river's band. Uses domain warping + single-octave noise for a
 // smooth, continuous, meandering contour.
-function _riverAt(x,y,offX,offY){
+function _riverField(x,y,offX,offY){
   // Domain warping — bends the contour into natural meanders.
   // Moderate amplitude (±12) avoids fold-backs that create blobs.
   const warpX=(noise2D(x*0.035+offX,y*0.035+offX)-0.5)*24;
   const warpY=(noise2D(x*0.035+offY,y*0.035+offY)-0.5)*24;
   // Primary field — single octave (smooth contour), very low frequency
   // → features span ~36 tiles → long rivers.
-  const n=noise2D((x+warpX)*0.028+offX,(y+warpY)*0.028+offY);  // [0,1]
-  // Thin band around the midpoint contour gives the river width.
-  // A separate noise modulates width so rivers vary from trickles to pools.
+  return noise2D((x+warpX)*0.028+offX,(y+warpY)*0.028+offY);  // [0,1]
+}
+function _riverAt(x,y,offX,offY){
+  // v35 — WIDTH MEASURED IN TILES, NOT IN NOISE SPACE (user: every river
+  // must be at least 2 tiles wide). The old fixed band (|n-0.5|<0.011..0.019)
+  // mapped to wildly different tile widths wherever the field gradient varied
+  // — at steep pinch points rivers thinned to a single tile or vanished.
+  // Fix: estimate the local gradient with central differences and scale the
+  // band so the SPATIAL half-width stays on target:  bandHalf = grad*halfTiles
+  //   halfTiles = 1.1..1.6 (slow width noise keeps stream-vs-pool variety)
+  //   → full width 2.2-3.2 tiles at ANY gradient, never below 2.
+  // The gradient floor (0.012) keeps genuinely flat spots — pools/lakes —
+  // from shrinking below their old size, so lakes still read as lakes.
+  const n=_riverField(x,y,offX,offY);
+  const gx=(_riverField(x+1,y,offX,offY)-_riverField(x-1,y,offX,offY))*0.5;
+  const gy=(_riverField(x,y+1,offX,offY)-_riverField(x,y-1,offX,offY))*0.5;
+  const grad=Math.max(Math.hypot(gx,gy),0.012);
   const widthNoise=noise2D(x*0.05+50+offX,y*0.05+50+offY);
-  const bandHalf=0.011+widthNoise*0.008;   // thin rivers, consistent width
-  return Math.abs(n-0.5)<bandHalf;
+  const halfTiles=1.1+widthNoise*0.5;      // full width 2.2-3.2 tiles
+  return Math.abs(n-0.5)<grad*halfTiles;
 }
 function isWaterAt(x,y){
   // Rivers pass through the grid — no inB exclusion. Ore placement
@@ -6400,6 +5811,71 @@ function isWaterAt(x,y){
   _waterCache.set(key,result);
   return result;
 }
+// v36 — SMOOTH WATER DEPTH FIELD. The water base color used to quantize per
+// tile (depth = integer 8-neighbor water count / 8) with one flat fill per
+// tile; on the wider v35 rivers that read as hard stripes (light bank | dark
+// center | light bank) plus a visible tile grid on the water. These helpers
+// sample a CONTINUOUS density field instead — the same continuity idiom the
+// terrain has used since v24b (edge samples shared by neighboring tiles).
+const _wDens=new Map();
+function _wDensity(x,y){
+  const k=x+','+y;let d=_wDens.get(k);
+  if(d===undefined){
+    let n=0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){if(isWaterAt(x+dx,y+dy))n++;}
+    d=n/9;
+    if(_wDens.size>30000){
+      const ev=Math.floor(_wDens.size*.25);
+      let i=0;for(const kk of _wDens.keys()){_wDens.delete(kk);if(++i>=ev)break}
+    }
+    _wDens.set(k,d);
+  }
+  return d;
+}
+function _wDepthAt(wx,wy){
+  // bilinear density at a world point (tile units) — continuous everywhere.
+  // Tile (x,y)'s density conceptually lives at its CENTER (x+.5,y+.5), so
+  // shift by half a tile before flooring: a tile's own center then evaluates
+  // to EXACTLY its own density, and a shared edge midpoint is the average
+  // of the two adjacent tiles on both sides (symmetric banks).
+  const gx=wx-.5, gy=wy-.5;
+  const x0=Math.floor(gx),y0=Math.floor(gy),fx=gx-x0,fy=gy-y0;
+  const a=_wDensity(x0,y0),b=_wDensity(x0+1,y0),c=_wDensity(x0,y0+1),e=_wDensity(x0+1,y0+1);
+  return (a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+e*fx)*fy;
+}
+function _wColAt(wx,wy){
+  // water color at a world point. Jitter is hashed from the sample point's
+  // OWN tile, so two adjacent tiles evaluating their shared edge midpoint
+  // get byte-identical colors — no seam, ever.
+  const d=_wDepthAt(wx,wy);
+  const j=(_hash2(Math.floor(wx),Math.floor(wy))-.5)*4;
+  const sR=148+j,sG=168+j,sB=178+j,dR=88+j,dG=118+j,dB=138+j;
+  return [Math.round(sR+(dR-sR)*d),Math.round(sG+(dG-sG)*d),Math.round(sB+(dB-sB)*d),d];
+}
+function _wBaseFill(ctx,x,y,px,py,x1,y1){
+  // Base fill for one water tile: FLAT color where depth is uniform (open
+  // water), otherwise a linear gradient along the dominant depth-change
+  // axis (across the river) with stops sampled at the two edge midpoints.
+  // Shared by the far-zoom fast path (cached once per tile) and the full
+  // painter (built per frame) so both LODs show identical colors.
+  const cC=_wColAt(x+.5,y+.5);
+  const cW2=_wColAt(x,y+.5),cE2=_wColAt(x+1,y+.5);
+  const cN2=_wColAt(x+.5,y),cS2=_wColAt(x+.5,y+1);
+  const flatish=(p,q)=>Math.abs(p[0]-q[0])<=3&&Math.abs(p[1]-q[1])<=3&&Math.abs(p[2]-q[2])<=3;
+  if(flatish(cW2,cE2)&&flatish(cN2,cS2)&&flatish(cW2,cN2))
+    return {fill:'rgb('+cC[0]+','+cC[1]+','+cC[2]+')',cC};
+  let g;
+  if(Math.abs(cE2[3]-cW2[3])>=Math.abs(cS2[3]-cN2[3])){
+    g=ctx.createLinearGradient(px,0,x1,0);
+    g.addColorStop(0,'rgb('+cW2[0]+','+cW2[1]+','+cW2[2]+')');
+    g.addColorStop(1,'rgb('+cE2[0]+','+cE2[1]+','+cE2[2]+')');
+  }else{
+    g=ctx.createLinearGradient(0,py,0,y1);
+    g.addColorStop(0,'rgb('+cN2[0]+','+cN2[1]+','+cN2[2]+')');
+    g.addColorStop(1,'rgb('+cS2[0]+','+cS2[1]+','+cS2[2]+')');
+  }
+  return {fill:g,cC};
+}
 // Paint a single water tile.
 // Art direction: clean, flat, modern board-game aesthetic. Water is a soft
 // blue-grey — desaturated enough to sit beside the warm terrain palette
@@ -6416,22 +5892,84 @@ function isWaterAt(x,y){
 function paintWater(ctx,x,y,T,time){
   const px=x*T, py=y*T, x1=px+T, y1=py+T;
   const t=time||0;
-  let wn=0;
-  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
-    if(dx===0&&dy===0)continue;
-    if(isWaterAt(x+dx,y+dy))wn++;
+  // v35c — FAR-ZOOM FAST PATH. Below ~26 device px per tile the animated
+  // dressing (ripples, foam, shimmer, sparkle) is sub-pixel — a water tile
+  // is just a flat depth-tinted square. Rivers got wider in v35 (>=2 tiles),
+  // so more water is visible at far zoom; this path caches all the static
+  // per-tile work (depth color, rounded-corner flags, majority prefill)
+  // and draws 1-2 fills per tile per frame instead of re-running ~24
+  // neighbor probes + the corner solver per tile. The full painter below
+  // is untouched for zoomed-in views, where the detail is actually visible.
+  // NOTE: threshold is 30, not drawTerrainDetail's 26 — the fresh-game
+  // minimum zoom is 0.25 (clamped by clampCam until off-grid tech),
+  // i.e. T*zoom = 28.6 CSS px, which MUST be inside the fast path or
+  // every visible water tile runs the full painter every frame.
+  if(T*(G&&G.cam?G.cam.zoom:1)<30){
+    const wk=x+','+y;
+    let f=_wFast.get(wk);
+    if(!f){
+      // v36 — smooth depth + edge-matched base (see _wBaseFill). Cached in
+      // _wFast so the per-frame cost stays 1 Map.get + 1-2 fills.
+      const bf=_wBaseFill(ctx,x,y,px,py,x1,y1);
+      // rounded-corner flags + majority-neighbor prefill — same rule as the
+      // full path below; geometry is static, so solve it once per tile.
+      function cInfo(cx,cy,myQ){
+        const nw=ttOf(cx-1,cy-1),ne=ttOf(cx,cy-1),sw=ttOf(cx-1,cy),se=ttOf(cx,cy);
+        const arr=[nw,ne,sw,se];
+        const cnt={};for(const tp of arr)cnt[tp]=(cnt[tp]||0)+1;
+        const vals=Object.values(cnt);
+        if(vals.length!==2||!vals.includes(3))return null;
+        const minType=arr.find(tp=>cnt[tp]===1);
+        const qv={NW:nw,NE:ne,SW:sw,SE:se};
+        if(qv[myQ]!==minType)return null;
+        const maj=arr.find(tp=>cnt[tp]===3);
+        const quads={NW:[cx-1,cy-1],NE:[cx,cy-1],SW:[cx-1,cy],SE:[cx,cy]};
+        for(const qn of ['NW','NE','SW','SE']){
+          if(qn===myQ)continue;
+          if(qv[qn]===maj){
+            const qx=quads[qn][0],qy=quads[qn][1];
+            const c=cellAt(qx,qy);
+            if(c&&c.terr!=='floor'&&ORES[c.terr])return blendedLayerColor(qx,qy,c.depth||1);
+            const d=c?c.depth:0;
+            if(!c||d<1)return [140,180,95];
+            return blendedLayerColor(qx,qy,d);
+          }
+        }
+        return null;
+      }
+      f={base:bf.fill,
+         tl:cInfo(x,y,'SE'), tr:cInfo(x+1,y,'SW'), bl:cInfo(x,y+1,'NE'), br:cInfo(x+1,y+1,'NW')};
+      if(_wFast.size>20000){
+        const ev2=Math.floor(_wFast.size*0.25);
+        let i2=0;
+        for(const kk of _wFast.keys()){_wFast.delete(kk);if(++i2>=ev2)break}
+      }
+      _wFast.set(wk,f);
+    }
+    const pre=f.tl||f.tr||f.bl||f.br;
+    if(pre){
+      ctx.fillStyle='rgb('+(pre[0]|0)+','+(pre[1]|0)+','+(pre[2]|0)+')';
+      ctx.fillRect(px-1,py-1,T+2,T+2);
+      ctx.fillStyle=f.base;
+      const rfa=T*.18;
+      ctx.beginPath();
+      if(f.tl){ctx.moveTo(px+rfa,py);ctx.arcTo(px,py,px,py+rfa,rfa);}else{ctx.moveTo(px-1,py-1)}
+      if(f.bl){ctx.lineTo(px,y1-rfa);ctx.arcTo(px,y1,px+rfa,y1,rfa);}else{ctx.lineTo(px-1,y1+1)}
+      if(f.br){ctx.lineTo(x1-rfa,y1);ctx.arcTo(x1,y1,x1,y1-rfa,rfa);}else{ctx.lineTo(x1+1,y1+1)}
+      if(f.tr){ctx.lineTo(x1,py+rfa);ctx.arcTo(x1,py,x1-rfa,py,rfa);}else{ctx.lineTo(x1+1,py-1)}
+      ctx.closePath();ctx.fill();
+    }else{
+      ctx.fillStyle=f.base;
+      ctx.fillRect(px-1,py-1,T+2,T+2);
+    }
+    return;
   }
-  const depth=wn/8;
+  // v36 — depth from the continuous density field (was: integer 8-neighbor
+  // count / 8, which quantized into visible color bands on wide rivers).
+  const bf=_wBaseFill(ctx,x,y,px,py,x1,y1);
+  const depth=bf.cC[3];
   const h=_hash2(x,y);
-  const v=(h-0.5)*4;
-  // Shallow: soft blue-grey (light, airy — reads as shallow water over sand)
-  // Deep: medium blue-grey (calm, cool — reads as deeper water)
-  // NOT saturated, NOT green, NOT brown. A clean muted blue.
-  const sR=148+v, sG=168+v, sB=178+v;   // shallow: soft blue-grey
-  const dR=88+v,  dG=118+v,  dB=138+v;   // deep: medium blue-grey
-  const cR=Math.round(sR+(dR-sR)*depth);
-  const cG=Math.round(sG+(dG-sG)*depth);
-  const cB=Math.round(sB+(dB-sB)*depth);
+  const cR=bf.cC[0], cG=bf.cC[1], cB=bf.cC[2];
 
   // Convex-corner rounding
   const rad=T*.18;
@@ -6497,8 +6035,10 @@ function paintWater(ctx,x,y,T,time){
     ctx.clip();
   }
 
-  // === BASE FILL ===
-  ctx.fillStyle='rgb('+cR+','+cG+','+cB+')';
+  // === BASE FILL === (v36: flat where uniform, edge-matched gradient
+  // across the river otherwise — neighboring tiles share edge samples, so
+  // the water shades continuously bank to bank with no tile grid)
+  ctx.fillStyle=bf.fill;
   ctx.fillRect(px-1,py-1,T+2,T+2);
 
   // === PER-TILE NOISE VARIATION ===
@@ -6772,18 +6312,6 @@ function buyTech(id){
   if(t.apply)t.apply();
   SFX.tech();
   ui();renderResearch();
-  // v31 — the unlock MOMENT: the just-bought node pops and glows so the
-  // purchase reads as an event, not a silent re-render.
-  try{
-    const nd=document.querySelector('[data-tech-id="'+id+'"]');
-    // NOTE: FX is a top-level const — it is NOT a window property, so the
-    // lookup must be lexical (typeof FX), not window.FX.
-    if(nd&&typeof FX!=='undefined'&&FX){
-      FX.popIn(nd);
-      nd.classList.add('v31-just');
-      setTimeout(()=>nd.classList.remove('v31-just'),1000);
-    }
-  }catch(e){}
   return true;
 }
 
@@ -7052,19 +6580,15 @@ function sellItem(x,y,type){
   burst(c.x,c.y-T*.1,'#ffc857',ITEMS[type].tier>=3?12:6,'coin');
   pulse(c.x,c.y,'rgba(255,200,87,.7)',T*.2,T*.7,.45,3);
   text(c.x,c.y-T*.25,'+$'+fmt(val),'#ffc857');
-  // v31 — big sales carry physical weight; coins fly to the wallet
-  if(ITEMS[type].tier>=4)_addShake(2.2,.3);
-  else if(ITEMS[type].tier>=3)_addShake(1.1,.22);
-  if(window._coinFly)_coinFly(c.x,c.y,val);
   ITEMS[type].tier>=4?SFX.big():SFX.coin();
   if(type==='android'&&!G.won){
     G.won=true;G.prestige++;G.prestigePts+=3;
-    SFX.win();_addShake(4,.5);
+    SFX.win();
     showPrestigeBanner();
     for(let i=0;i<70;i++)setTimeout(()=>burst(rnd(0,S),rnd(0,S*.4),'#ffc857',3,'coin'),i*28);
   }
   if(type==='dysonSwarm'&&!G.act2Won){
-    G.act2Won=true;SFX.win();_addShake(4,.5);
+    G.act2Won=true;SFX.win();
     showAct2WinBanner();
     for(let i=0;i<120;i++)setTimeout(()=>burst(rnd(0,S),rnd(0,S*.4),'#79f0ff',5,'sparkle'),i*20);
   }
@@ -7125,8 +6649,6 @@ function processExcavator(m,x,y,dt){
       const rad=Math.min(m.radius??0, radMax);
       // Mine all blocks in radius + destroy buildings (except bridges) + reveal ores
       const c=center(x,y);
-      let lastMD=2;                                // v31 — deepest stratum bitten this pass
-                                                  // (safe default; always set from a real minedDepth on dig)
       for(let dy=-rad;dy<=rad;dy++)for(let dx=-rad;dx<=rad;dx++){
         const mx=x+dx,my=y+dy;
         // Skip water tiles — excavator can't dig rivers/lakes
@@ -7142,15 +6664,14 @@ function processExcavator(m,x,y,dt){
             if(refund>0)G.money+=refund
           }
           mc.m=null;
-          burst(c.x+dx*T,c.y+dy*T,'#c46a3a',9,'shard');
-          _addShake(2,.22);
+          burst(c.x+dx*T,c.y+dy*T,'#c46a3a',5,'shard');
         }
         // === DIG + REVEAL ORES ===
         const depth=mc.depth||1;
         const minedDepth=depth+1;
         if(minedDepth>=LAYERS.length)continue;
         const ore=oreAtDepth(mx,my,minedDepth);
-        mc.depth=minedDepth;lastMD=minedDepth;
+        mc.depth=minedDepth;
         if(ore){
           const terrKey=TERR_OF[ore];
           if(terrKey){
@@ -7174,18 +6695,6 @@ function processExcavator(m,x,y,dt){
         }
       }
       burst(c.x,c.y,'#8a6a4a',6,'shard');SFX.drill();
-      // v31 — THE BLOCK-BREAK MOMENT: layer-hued debris fountain, dust
-      // smoke rolling off the wall, a shockwave ring, and a 2.6px camera
-      // thump. Mass giving way — not a quiet six-particle puff.
-      {
-        const li=layerInfoAt(lastMD);
-        const LT=LAYER_TYPES[li?li.typeIdx:0];
-        const dcol=(LT&&LT.dark)?terrCol(LT.dark):'#8a6a4a';
-        burst(c.x,c.y,dcol,10,'shard');
-        burst(c.x,c.y,'#8a7a66',5,'smoke');
-        pulse(c.x,c.y,'rgba(224,138,60,.6)',T*.25,T*1.3,.5,4);
-        _addShake(2.6,.28);
-      }
       _terrainCache.clear();
       if(G.sel&&G.sel.x===x&&G.sel.y===y)refreshUp();
     }
@@ -7704,7 +7213,6 @@ function text(x,y,txt,col){G.texts.push({x,y,txt,col,life:1.4,vy:-34,pop:0})}
 let flashes=[];
 function flash(x,y){flashes.push({x,y,life:.4})}
 function updFX(dt){
-  _stepShake(dt);
   for(const p of G.parts){
     p.x+=p.vx*dt;p.y+=p.vy*dt;p.rot+=(p.vr||0)*dt;
     const g=p.kind==='smoke'?-26:p.kind==='steam'?-8:p.kind==='sparkle'?-8:p.kind==='coin'?260:p.kind==='ember'?150:220;
@@ -9210,7 +8718,7 @@ function drawTerrainDetail(ctx,bx0,by0,bx1,by1){
 // Uses a deterministic hash per tile so deco is stable across frames.
 // Flowers and grass blades are drawn in a 3/4 topdown perspective —
 // small clumps of blades leaning slightly, with tiny flower dots.
-function drawGrassDeco(ctx,bx0,by0,bx1,by1,time){
+function drawGrassDeco(ctx,bx0,by0,bx1,by1){
   const flowerCols=['#f0e040','#e06080','#a040e0','#f0a040','#e0e0e0'];
   for(let y=by0;y<by1;y++)for(let x=bx0;x<bx1;x++){
     if(ttOf(x,y)!=='grass')continue;
@@ -9224,12 +8732,10 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1,time){
       for(let i=0;i<nBlades;i++){
         const hh=_hash2(x*7+i*13,y*7+i*17);
         const hx=_hash2(x*11+i*19,y*11+i*23);
-        let dx=px+T*(.12+hx*.76);
-        let dy=py+T*(.12+hh*.76);
+        const dx=px+T*(.12+hx*.76);
+        const dy=py+T*(.12+hh*.76);
         if(hh<0.32){
           // flower — 3/4 topdown view: green base + colored petals (enlarged)
-          // v31 — whole clump bobs in the wind (stems flex, heads drift)
-          if(window._wind){const wf=_wind(dx,dy,time||0)*T*.024;dx+=wf;dy+=wf*.3}
           const col=flowerCols[Math.floor(hx*flowerCols.length)];
           // grass base clump
           ctx.fillStyle='rgba(100,160,60,.55)';
@@ -9254,11 +8760,8 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1,time){
             const bh=_hash2(x*17+b*23+i*31,y*17+b*23+i*31);
             const bx2=dx+(bh-.5)*T*.08;
             const by2=dy+(hx-.5)*T*.08;
-            // v31 — blade clumps whip with the gust: lean swings, tips
-            // stretch a hair. Same wind field as the bank curtain.
-            const wv2=window._wind?_wind(bx2,by2,time||0):0;
-            const len=T*(.075+bh*.045)+Math.abs(wv2)*T*.014;
-            const lean=(bh-.5)*T*.035+wv2*T*.062;
+            const len=T*(.075+bh*.045);
+            const lean=(bh-.5)*T*.035;
             ctx.beginPath();
             ctx.moveTo(bx2,by2);
             ctx.quadraticCurveTo(bx2+lean*.5,by2-len*.5,bx2+lean,by2-len);
@@ -9308,10 +8811,7 @@ function render(time){
   ctx.save();
   ctx.translate(SW/2,SH/2);
   ctx.scale(G.cam.zoom,G.cam.zoom);
-  // v31 — camera shake: screen-space amplitude (divide by zoom), never
-  // touching G.cam so clampCam + gsap camera flights stay exact.
-  const _sk=window._shk;
-  ctx.translate(-G.cam.x-(_sk?_sk.dx/G.cam.zoom:0),-G.cam.y-(_sk?_sk.dy/G.cam.zoom:0));
+  ctx.translate(-G.cam.x,-G.cam.y);
   // ---- OFF-GRID GRASS (Layer 0) — Perlin-varied green tiles ----
   const minX=G.cam.x-(SW/2)/G.cam.zoom,maxX=G.cam.x+(SW/2)/G.cam.zoom;
   const minY=G.cam.y-(SH/2)/G.cam.zoom,maxY=G.cam.y+(SH/2)/G.cam.zoom;
@@ -13133,9 +12633,9 @@ function playPrestigeCinematic(opts){
   // Audio: low rumble + sub-bass drone begins.
   tl.call(() => {
       overlay.classList.add('cine-dim');
-      noise(.7, .18, 80, 0, {wet:.3});
-      tone(55, 55, .7, 'sine', .30, 0, {wet:.35});
-      tone(110, 90, .7, 'triangle', .10, 0, {wet:.3});
+      noise(.7, .18, 80, 0);
+      tone(55, 55, .7, 'sine', .30, 0);
+      tone(110, 90, .7, 'triangle', .10, 0);
     }, null, 0)
     .to(G.cam, {zoom: 2.0, duration: 0.5, ease: 'power2.out'}, 0);
 
@@ -13149,8 +12649,8 @@ function playPrestigeCinematic(opts){
   tl.to(G, {cineMachineSpin: Math.PI * 2, duration: 1.0, ease: 'power2.in'}, 0.5)
     .to(G.cam, {zoom: 2.8, duration: 1.0, ease: 'power2.out'}, 0.5)
     .call(() => {
-      tone(220, 720, .95, 'sawtooth', .12, 0, {wet:.25});
-      tone(440, 1280, .75, 'triangle', .09, .18, {wet:.25});
+      tone(220, 720, .95, 'sawtooth', .12, 0);
+      tone(440, 1280, .75, 'triangle', .09, .18);
       // stagger ember vents — light texture
       const machines = [];
       for (let y = 0; y < G.N; y++) for (let x = 0; x < G.N; x++) {
@@ -13190,8 +12690,8 @@ function playPrestigeCinematic(opts){
             r0: S*.5*(1-i*.12), r1: T*.1, life: .5, max: .5, w: 3.5});
         }, i * 70);
       }
-      tone(300, 1500, .75, 'sawtooth', .13, 0, {wet:.3});
-      noise(.55, .10, 800, 0, {wet:.25});
+      tone(300, 1500, .75, 'sawtooth', .13, 0);
+      noise(.55, .10, 800, 0);
     }, null, 1.5)
     // Camera orbit (first 0.6s of implosion) — subtle parallax
     .to(G.cam, {
@@ -13217,9 +12717,9 @@ function playPrestigeCinematic(opts){
     .call(() => {
       overlay.classList.remove('cine-dim');
       overlay.classList.add('cine-flash');
-      noise(.5, .42, 60, 0, {wet:.4});
-      tone(90, 28, .65, 'sine', .36, 0, {wet:.4});
-      tone(220, 55, .45, 'triangle', .20, .04, {wet:.35});
+      noise(.5, .42, 60, 0);
+      tone(90, 28, .65, 'sine', .36, 0);
+      tone(220, 55, .45, 'triangle', .20, .04);
     }, null, 2.5)
     .add(() => shake(S * 0.038, 0.5), 2.5)
     .call(() => {
@@ -13355,12 +12855,10 @@ function playPrestigeCinematic(opts){
         }
       });
 
-      // Audio: 5-note rising BELL arpeggio + sustained C+G pad swells +
-      // octave shimmer — the new world dawns in metal, not sine.
-      [523, 659, 784, 1046, 1318].forEach((f, i) => _clink(f, .12, i * 0.13, {wet:.4}));
-      tone(523, 523, 1.4, 'sine', 0.09, 0.65, {wet:.3, atk:.15});  // sustained C pad
-      tone(784, 784, 1.4, 'sine', 0.09, 0.65, {wet:.3, atk:.15});  // sustained G pad
-      _clink(2093, .05, 1.0, {wet:.45});                           // dawn shimmer
+      // Audio: 5-note rising arpeggio + sustained C+G chord
+      [523, 659, 784, 1046, 1318].forEach((f, i) => tone(f, f, 0.4, 'sine', 0.20, i * 0.13));
+      tone(523, 523, 1.4, 'sine', 0.09, 0.65);  // sustained C
+      tone(784, 784, 1.4, 'sine', 0.09, 0.65);  // sustained G
     }, null, 2.9);
 
   // ====================================================================
@@ -13606,6 +13104,8 @@ function loadGame(){
     if(d.cam&&typeof d.cam==='object'){G.cam.x=d.cam.x;G.cam.y=d.cam.y;G.cam.zoom=d.cam.zoom}
     if(typeof d.waterSeed==='number')G.waterSeed=d.waterSeed;
     _waterCache.clear();
+    try{_wFast.clear()}catch(e){}          // v35e — far-zoom water paints are seed-dependent too
+    try{_wDens.clear()}catch(e){}          // v36 — smooth-depth densities too
     _peCache=null;_peFrame=-1;  // invalidate prestige effect cache
     G.grid=d.grid.map(row=>row.map(c=>{
       const m=c.m?Object.assign({spin:0,pop:0,disp:0,arm:0,rr:0,modules:[null,null,null]},c.m):null;
@@ -13830,7 +13330,7 @@ if ('serviceWorker' in navigator) {
       demoZoom=true;
       // v10: deterministic river seed — chosen so the river meanders through the
       // mid-west and provably misses every machine/belt/ore/decor tile.
-      G.waterSeed=1.9;try{_waterCache.clear()}catch(e){}
+      G.waterSeed=1.9;try{_waterCache.clear();_wFast.clear();_wDens.clear()}catch(e){}
       G.grid=buildGrid();G.N=GN;G.items=[];G.parts=[];G.texts=[];G.rings=[]
       G.time=0;G.money=1000000;G.earned=0;G.hist=[];G.won=false;
       G.hover=null;G.sel=null;G.drag=null;G.tool='drill';G.dir='E';
@@ -13995,7 +13495,6 @@ if ('serviceWorker' in navigator) {
   function dismiss(restore){
     if(ts.classList.contains('gone'))return;
     audio();
-    try{window.__SFX&&window.__SFX.open()}catch(e){}  // v32c: rising whoosh — the game opens
     TitleFX.stop();                    // kill GSAP title animations on dismiss
     const loader=document.getElementById('gameLoader');
     // 1. Show loading screen immediately (covers everything)
@@ -16409,71 +15908,6 @@ body.cine-mode .stage{padding:0 !important}
   function cancel(){if(flight){flight.kill();flight=null}}
   window.addEventListener('pointerdown',cancel,{passive:true,capture:true});
   window.addEventListener('wheel',cancel,{passive:true,capture:true});
-})();
-</script>
-<style id="v31-anim">
-/* ===== v31 — animation overhaul DOM layer ===== */
-.coin-fly{position:fixed;width:10px;height:10px;border-radius:50%;
-  background:#ffc857;border:2px solid #c8861a;z-index:195;pointer-events:none;
-  box-shadow:0 0 6px rgba(255,200,87,.7)}
-.node.v31-just{box-shadow:0 0 0 3px rgba(63,158,84,.7),0 0 22px rgba(63,158,84,.7)!important}
-@media (prefers-reduced-motion:reduce){.coin-fly{display:none}}
-</style>
-<script id="v31-anim-js">
-// v31 — A) COIN FLIGHT: every sale launches a coin from the seller's screen
-// position that arcs up, then dives into the wallet chip and pulses it on
-// arrival. Throttled (>=90ms apart), capped (8 in flight), skipped when the
-// sale point is off-screen or the wallet is hidden. Reduced-motion: off.
-// B) TOOL EQUIP NUDGE: arming a toolbar button pops it (scale spring) —
-// watches class flips on #toolsBox (the game toggles .on there via ui()).
-(function(){
-  'use strict';
-  var REDUCED=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  // ---- A) coin flight -------------------------------------------------
-  var nFly=0,lastFly=0;
-  window._coinFly=function(wx,wy,val){
-    if(REDUCED||!window.gsap||!G||!G.cam)return;
-    var now=performance.now();
-    if(now-lastFly<90||nFly>=8)return;
-    lastFly=now;
-    var cam=G.cam;
-    var sx=(wx-cam.x)*cam.zoom+SW/2, sy=(wy-cam.y)*cam.zoom+SH/2;
-    if(sx<-40||sx>SW+40||sy<-40||sy>SH+40)return;   // off-screen seller
-    var wal=document.getElementById('goldEl');
-    if(!wal||!wal.offsetParent)return;               // wallet hidden
-    var wr=wal.getBoundingClientRect();
-    var tx=wr.left+wr.width*.5, ty=wr.top+wr.height*.5;
-    var el=document.createElement('div');
-    el.className='coin-fly';
-    el.style.left=(sx-5)+'px';el.style.top=(sy-5)+'px';
-    document.body.appendChild(el);
-    nFly++;
-    gsap.timeline({onComplete:function(){
-        el.remove();nFly--;
-        try{if(typeof FX!=='undefined')FX.pulse(wal,1.08,.14)}catch(e){}
-      }})
-      .to(el,{x:26,y:-30,scale:1.15,duration:.16,ease:'power2.out'})
-      .to(el,{left:tx-5,top:ty-5,x:0,y:0,scale:.55,duration:.4,ease:'power2.in'},.08);
-  };
-
-  // ---- B) tool equip nudge --------------------------------------------
-  var box=document.getElementById('toolsBox');
-  if(box&&window.gsap&&!REDUCED){
-    var wasOn=function(v){return !!v&&/(^| )on( |$)/.test(v)};
-    new MutationObserver(function(muts){
-      for(var i=0;i<muts.length;i++){
-        var m=muts[i],t=m.target;
-        if(!t||!t.classList||!t.classList.contains('tool'))continue;
-        if(!t.classList.contains('on'))continue;        // only when arming
-        if(wasOn(m.oldValue))continue;                  // was already on
-        gsap.killTweensOf(t);
-        gsap.fromTo(t,{scale:1},{scale:1.07,duration:.08,ease:'power2.out',
-          yoyo:true,repeat:1,clearProps:'transform'});
-      }
-    }).observe(box,{subtree:true,attributes:true,
-      attributeFilter:['class'],attributeOldValue:true});
-  }
 })();
 </script>
 </body>
