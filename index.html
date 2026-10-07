@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Excavatorio</title>
 <meta name="description" content="A finite-resource factory builder. Mine ores, smelt alloys, research tech, and assemble your way to shipping an Android.">
 <meta name="theme-color" content="#e07a2e">
@@ -912,8 +912,9 @@
   }
   /* ============ mobile — top bar slims, dock becomes swipe strip ============ */
   @media (max-width:760px){
-    :root{--hud-top:50px;--safe-bot:172px}
-    .hud-top{padding:0 10px;gap:8px}
+    :root{--hud-top:50px;--safe-bot:calc(172px + env(safe-area-inset-bottom,0px))}
+    .hud-top{padding:0 10px;gap:8px;
+      padding-top:env(safe-area-inset-top,0px)}
     .brand .brand-t{display:none}
     .brand .brand-gear{width:22px;height:22px}
     .wallet{padding:4px 10px 5px;gap:8px}
@@ -925,7 +926,7 @@
     .resbtn .resbtn-ico{font-size:15px}
     .game-controls{gap:5px}
     .gc-btn{width:34px;height:34px;font-size:15px}
-    .hud-dock{left:8px;right:8px;bottom:8px;width:auto;transform:none;
+    .hud-dock{left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;transform:none;
       padding:8px 8px 9px;gap:7px;border-radius:var(--r-lg)}
     .dock-head{gap:8px}
     .dock-head .sect .sect-l{font-size:8px}
@@ -968,7 +969,7 @@
   }
   /* landscape phones — maximise the play band */
   @media (max-width:760px) and (max-height:560px){
-    :root{--hud-top:42px;--safe-bot:126px}
+    :root{--hud-top:42px;--safe-bot:calc(126px + env(safe-area-inset-bottom,0px))}
     .hud-dock{padding:6px 8px 7px;gap:5px}
     .dock-head{gap:6px}
     .volrow{display:none}
@@ -1866,7 +1867,7 @@
       <div class="mhd">
         <h2>⚗ RESEARCH TREE</h2>
         <div class="res-search"><input id="resSearch" type="text" placeholder="Search research…  ( / )" autocomplete="off" spellcheck="false"><span class="rs-n" id="resSearchN"></span><button class="rs-x" id="resSearchClear" type="button" title="Clear search">×</button></div>
-        <div class="res-prog"><b id="resProgNum">0/0</b><span class="rp-track"><span class="rp-fill" id="resProgFill"></span></span></div>
+        <div class="res-prog" title="Technologies researched"><span class="rp-lab">RESEARCHED</span><b id="resProgNum">0/0</b><span class="rp-track"><span class="rp-fill" id="resProgFill"></span></span></div>
         <div class="mfund" id="resFund">$0</div>
         <button class="x" id="resClose">×</button>
       </div>
@@ -2567,7 +2568,11 @@ function paintTerrain(ctx,x,y,T,depth){
   if(!bgColor&&brRound)tryCorner(x+1,y+1,'NW');
   if(bgColor){
     ctx.fillStyle=`rgb(${bgColor[0]|0},${bgColor[1]|0},${bgColor[2]|0})`;
-    ctx.fillRect(px-1,py-1,T+2,T+2);
+    // v59 — no WEST/NORTH margin: the -1 poked this fill 1px into the
+    // earlier-painted west/north neighbours (visible as a land-coloured
+    // fleck inside water tiles at mixed corners). Seams stay bridged by the
+    // neighbour's own +1 east/south overhang.
+    ctx.fillRect(px,py,T+1,T+1);
   }
   // CRITICAL: reset fillStyle to THIS TILE's color before drawing the rounded
   // shape. Without this, the shape inherits bgColor (the neighbor's color) and
@@ -2575,35 +2580,38 @@ function paintTerrain(ctx,x,y,T,depth){
   // grass, grass tiles near water look blue.
   ctx.fillStyle=cached.fillStyle;
   // Now draw the rounded tile shape on top with this tile's color
-  const o = 1;  // overlap for non-rounded edges (prevents seams with same-type neighbors)
+  // v59 — overlap only EAST/SOUTH (+1): those neighbours repaint later, so
+  // the strip is always covered. WEST/NORTH neighbours painted earlier — a
+  // -1 there poked this tile's fill into them (land-in-water corner flecks).
+  const oW = 0, oN = 0, oE = 1, oS = 1;
   ctx.beginPath();
   // Top-left corner
   if(tlRound){
     ctx.moveTo(px+r, py);
     ctx.arcTo(px,py,px,py+r,r);
   }else{
-    ctx.moveTo(px-o, py-o);
+    ctx.moveTo(px-oW, py-oN);
   }
   // Left edge → bottom-left corner
   if(blRound){
     ctx.lineTo(px, y1-r);
     ctx.arcTo(px,y1,px+r,y1,r);
   }else{
-    ctx.lineTo(px-o, y1+o);
+    ctx.lineTo(px-oW, y1+oS);
   }
   // Bottom edge → bottom-right corner
   if(brRound){
     ctx.lineTo(x1-r, y1);
     ctx.arcTo(x1,y1,x1,y1-r,r);
   }else{
-    ctx.lineTo(x1+o, y1+o);
+    ctx.lineTo(x1+oE, y1+oS);
   }
   // Right edge → top-right corner
   if(trRound){
     ctx.lineTo(x1, py+r);
     ctx.arcTo(x1,py,x1-r,py,r);
   }else{
-    ctx.lineTo(x1+o, py-o);
+    ctx.lineTo(x1+oE, py-oN);
   }
   ctx.closePath();
   ctx.fill();
@@ -2717,6 +2725,16 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
     return 'SE';
   }
   const r=T*.18;
+  // v53 — TERMINAL CAP TRIM: border strokes use round caps, which overhang
+  // lineW/2 PAST a plain (arcless) endpoint. When a border STOPS at that
+  // tile corner — the boundary beyond belongs to a different tile pair, e.g.
+  // a green grass|water border ending where a sand bank's rim takes over —
+  // the overhang paints a half-disc of the wrong color into the next tiles'
+  // corner (the green notch in the sand's inside corners). contSame() asks:
+  // does the tile pair the stroke's line continues into draw the SAME border
+  // color? If not, the endpoint is a terminal one and gets pulled in by
+  // lineW/2 so the round cap lands exactly ON the corner point.
+  const contSame=(qx1,qy1,qx2,qy2,qcol)=>edgeCol(ttOf(qx1,qy1),ttOf(qx2,qy2))===qcol;
   // SINGLE PASS with deferred grass borders.
   // Collect grass-edge draw calls during the main pass, then draw them
   // on top after all non-grass borders are done. This avoids iterating
@@ -2757,8 +2775,8 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
           ctx.beginPath();
           if(topQ==='SW'){ctx.moveTo(x1-r,py);ctx.arcTo(x1,py,x1,py+r,r);}
           else if(topQ==='SE'){ctx.moveTo(x1+r,py);ctx.arcTo(x1,py,x1,py+r,r);}
-          else{ctx.moveTo(x1,py);}
-          ctx.lineTo(x1,botQ?py+T-r:py+T);
+          else{ctx.moveTo(x1,contSame(x,y-1,x+1,y-1,col)?py:py+lineW/2);}              // v53 cap trim
+          ctx.lineTo(x1,botQ?py+T-r:(contSame(x,y+1,x+1,y+1,col)?py+T:py+T-lineW/2)); // v53 cap trim
           if(botQ==='NW'){ctx.arcTo(x1,py+T,x1-r,py+T,r);}
           else if(botQ==='NE'){ctx.arcTo(x1,py+T,x1+r,py+T,r);}
           ctx.stroke();
@@ -2771,8 +2789,8 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
         const leftQ=convexQuad(x,y+1);
         const rightQ=convexQuad(x+1,y+1);
         const y1=py+T;
-        const x0=leftQ?px+r:px;
-        const x1=rightQ?px+T-r:px+T;
+        const x0=leftQ?px+r:(contSame(x-1,y,x-1,y+1,col)?px:px+lineW/2);              // v53 cap trim
+        const x1=rightQ?px+T-r:(contSame(x+1,y,x+1,y+1,col)?px+T:px+T-lineW/2);       // v53 cap trim
         if(sIsGrass){
           grassEdges.push({col,x0,x1,y1,edge:'S',gx:0,gy:here==='grass'?-1:1,dA:dirtDark(here==='grass'?S:here)});
         }else{
@@ -2786,8 +2804,8 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
       const col=edgeCol(here,N);if(col){
         const leftQ=convexQuad(x,y);
         const rightQ=convexQuad(x+1,y);
-        const x0=leftQ?px+r:px;
-        const x1=rightQ?px+T-r:px+T;
+        const x0=leftQ?px+r:(contSame(x-1,y-1,x-1,y,col)?px:px+lineW/2);              // v53 cap trim
+        const x1=rightQ?px+T-r:(contSame(x+1,y-1,x+1,y,col)?px+T:px+T-lineW/2);       // v53 cap trim
         if(nIsGrass){
           grassEdges.push({col,x0,x1,py,edge:'N',gx:0,gy:here==='grass'?1:-1,dA:dirtDark(here==='grass'?N:here)});
         }else{
@@ -2801,8 +2819,8 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
       const col=edgeCol(here,W);if(col){
         const topQ=convexQuad(x,y);
         const botQ=convexQuad(x,y+1);
-        const y0=topQ?py+r:py;
-        const y1=botQ?py+T-r:py+T;
+        const y0=topQ?py+r:(contSame(x-1,y-1,x,y-1,col)?py:py+lineW/2);               // v53 cap trim
+        const y1=botQ?py+T-r:(contSame(x-1,y+1,x,y+1,col)?py+T:py+T-lineW/2);         // v53 cap trim
         if(wIsGrass){
           grassEdges.push({col,px,py,T,r,topQ,botQ,y0,y1,edge:'W',gx:here==='grass'?1:-1,gy:0,dA:dirtDark(here==='grass'?W:here)});
         }else{
@@ -2840,7 +2858,13 @@ function drawTerrainEdges(ctx,bx0,by0,bx1,by1){
     //     the fill edge can never poke out past it (v30's coverage fix,
     //     minus the organic dressing).
     let ax,ay,bx2,by2;
-    if(e.edge==='E'){ax=e.x1;ay=e.topQ?e.py+e.r:e.py;bx2=e.x1;by2=e.botQ?e.py+e.T-e.r:e.py+e.T;}
+    // v53 cap trim — E-edge endpoints are computed here; W/S/N edges carry
+    // push-time-trimmed y0/y1/x0/x1 already.
+    const gx0=Math.round(e.px/e.T),gy0=Math.round(e.py/e.T);
+    if(e.edge==='E'){
+      ax=e.x1;ay=e.topQ?e.py+e.r:(contSame(gx0,gy0-1,gx0+1,gy0-1,e.col)?e.py:e.py+lineW/2);
+      bx2=e.x1;by2=e.botQ?e.py+e.T-e.r:(contSame(gx0,gy0+1,gx0+1,gy0+1,e.col)?e.py+e.T:e.py+e.T-lineW/2);
+    }
     else if(e.edge==='W'){ax=e.px;ay=e.y0;bx2=e.px;by2=e.y1;}
     else if(e.edge==='S'){ax=e.x0;ay=e.y1;bx2=e.x1;by2=e.y1;}
     else{ax=e.x0;ay=e.py;bx2=e.x1;by2=e.py;}
@@ -4150,8 +4174,11 @@ function oreChunk(g,cx,cy,r,a,C,shape,glow){
       for(const[ox,oy,rr2] of [[-.4,.2,.6],[.4,.3,.55],[.05,-.4,.62]]){
         g.fillStyle=C.side;g.beginPath();g.arc(ox*r,oy*r,rr2*r*.7,0,7);g.fill();
         g.strokeStyle=C.line;g.lineWidth=lw*.8;g.stroke();
+        // v52 — the highlight hugs THIS nodule's own top-left rim (the old
+        // single arc floated in the gap between nodules and read as a glitch)
+        g.strokeStyle=HL;g.lineWidth=HLW;
+        g.beginPath();g.arc(ox*r,oy*r,rr2*r*.7*.72,Math.PI*.95,Math.PI*1.38);g.stroke();
       }
-      hlArc(-.45,-.05,.32,Math.PI*.9,Math.PI*1.5);
       break;
     case'disc': // nickel — flat coin
       g.fillStyle=C.side;g.beginPath();g.arc(0,0,r*.85,0,7);g.fill();
@@ -4236,6 +4263,31 @@ function drawVeins(time){
       ctx.beginPath();ctx.ellipse(chunk.x+chunk.r*.1,chunk.y+chunk.r*.82,chunk.r*1.04,chunk.r*.5,0,0,7);ctx.fill();
       ctx.globalAlpha=1;
       oreChunk(ctx,chunk.x,chunk.y,chunk.r,chunk.a,C,shape,baseGlow);
+    }
+    // v52 — occasional twinkle: every few seconds one vein catches the light
+    // with a tiny 4-ray sparkle (diagonal rays + a soft dot — reads as a
+    // glint, never as a stray mark). Phased per vein.
+    if(offsets.length){
+      const cyc=4.5, gp=((time||0)*.55+((h>>3)&255)/255*cyc)%cyc;
+      if(gp<.6){
+        const ga=Math.sin(gp/.6*Math.PI)*.55;
+        const gi=offsets[0];
+        const cxg=gi.x,cyg=gi.y-(gi.r||T*.09)*.35;
+        // soft halo dot first (the 'bloom' of the catch-light)
+        ctx.fillStyle='rgba(255,255,255,'+(ga*.5).toFixed(3)+')';
+        ctx.beginPath();ctx.arc(cxg,cyg,Math.max(1,T*.016),0,7);ctx.fill();
+        // four short diagonal rays
+        ctx.strokeStyle='rgba(255,255,255,'+ga.toFixed(3)+')';
+        ctx.lineWidth=Math.max(1,T*.009);ctx.lineCap='round';
+        const gl=T*.034;
+        ctx.beginPath();
+        for(let r2=0;r2<4;r2++){
+          const a2=Math.PI/4+r2*Math.PI/2;
+          ctx.moveTo(cxg+Math.cos(a2)*T*.012,cyg+Math.sin(a2)*T*.012);
+          ctx.lineTo(cxg+Math.cos(a2)*gl,cyg+Math.sin(a2)*gl);
+        }
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -5754,6 +5806,7 @@ function rollNewOres(minX,minY,maxX,maxY,boost){
 function genTerrain(){
   _terrainCache.clear();          // clear cached terrain colors so a new game uses fresh layer colors
   _waterCache.clear();            // clear water cache — seed is about to change
+  _wOver.clear();                 // v58 — water overhang bits are seed-dependent
   _wFast.clear();                 // v35c — far-zoom water paints depend on the seed too
   _wDens.clear();                 // v36 — smooth-depth densities are seed-dependent too
   _sandCache.clear();             // v38 — sand beaches are seed-dependent too
@@ -5846,6 +5899,24 @@ function isWaterAt(x,y){
     }
   _waterCache.set(key,result);
   return result;
+}
+// v58 — WATER-TILE OVERHANG BITS (cached). Water is a pure function of
+// (x,y)+seed, so whether each edge may bridge the seam toward a neighboring
+// WATER tile is static between seed changes. Numeric key = isSandAt's
+// bijective pattern (no per-call string allocation). Bits: 1=W 2=E 4=N 8=S.
+const _wOver=new Map();
+function _wOverhang(x,y){
+  const key=(x+8192)*16384+(y+8192);
+  let v=_wOver.get(key);
+  if(v===undefined){
+    v=(isWaterAt(x-1,y)?1:0)|(isWaterAt(x+1,y)?2:0)|(isWaterAt(x,y-1)?4:0)|(isWaterAt(x,y+1)?8:0);
+    if(_wOver.size>30000){
+      const ev=Math.floor(_wOver.size*.25);
+      let i=0;for(const kk of _wOver.keys()){_wOver.delete(kk);if(++i>=ev)break}
+    }
+    _wOver.set(key,v);
+  }
+  return v;
 }
 // v38 SAND BEACHES + v41 DESERTS ==========================================
 // Sand is a pure function of (x,y)+G.waterSeed, exactly like water: no
@@ -5942,6 +6013,17 @@ function isSandAt(x,y){
 // (user: ORES CANNOT SPAWN ON CACTUS).
 function cactusAt(x,y){
   return isSandAt(x,y)&&_hash2(x*5+3,y*5+11)<=0.11;
+}
+// v51 — QUARTZ OUTCROPS ON ALL SAND (user: "quartz has a chance to spawn not
+// just in the 7x7 square but on all sand"). Same pure-function contract as
+// cactusAt: a deterministic hash picks ~8% of sand tiles (never on a cactus —
+// the plant layer owns that tile) for a surface quartz cluster. A drill on an
+// outcrop extracts quartz instead of sand (MK1 — beachcombing quartz sits in
+// the sand economy; deep Clay quartz still needs the excavator, and quartz
+// VEIN terrain still needs MK2). Works in-grid AND off-grid, infinite in all
+// directions; gone when the sand layer is dug away, hidden under machines.
+function quartzOutAt(x,y){
+  return isSandAt(x,y)&&!cactusAt(x,y)&&_hash2(x*7+13,y*7+29)<=0.08;
 }
 // v36 — SMOOTH WATER DEPTH FIELD. The water base color used to quantize per
 // tile (depth = integer 8-neighbor water count / 8) with one flat fill per
@@ -6061,10 +6143,24 @@ function paintWater(ctx,x,y,T,time){
           if(qv[qn]===maj){
             const qx=quads[qn][0],qy=quads[qn][1];
             const c=cellAt(qx,qy);
+            // v52 — SAND corners: a sand majority must prefill SAND (the same
+            // noise-modulated fill its tile paints), never grass/topsoil.
+            // This is the shore twin of the corner-gap bug fixed for
+            // paintTerrain in v38 — it put green notches on beach corners.
+            if((c?(c.depth||0):0)<2&&isSandAt(qx,qy)){
+              const vv=1+(fbm(qx*.35,qy*.35,3)-.5)*.10
+                     +(fbm(qx*1.8+100,qy*1.8+100,2)-.5)*.05
+                     +(fbm(qx*4.2+50,qy*4.2+50,1)-.5)*.03;
+              return [SAND_BASE[0]*vv,SAND_BASE[1]*vv,SAND_BASE[2]*vv];
+            }
             if(c&&c.terr!=='floor'&&ORES[c.terr])return blendedLayerColor(qx,qy,c.depth||1);
             const d=c?c.depth:0;
             if(!c||d<1)return [140,180,95];
-            return blendedLayerColor(qx,qy,d);
+            const lc=blendedLayerColor(qx,qy,d);
+            const lv=1+(fbm(qx*.35,qy*.35,3)-.5)*.10
+                   +(fbm(qx*1.8+100,qy*1.8+100,2)-.5)*.05
+                   +(fbm(qx*4.2+50,qy*4.2+50,1)-.5)*.03;
+            return [lc[0]*lv,lc[1]*lv,lc[2]*lv];
           }
         }
         return null;
@@ -6081,18 +6177,24 @@ function paintWater(ctx,x,y,T,time){
     const pre=f.tl||f.tr||f.bl||f.br;
     if(pre){
       ctx.fillStyle='rgb('+(pre[0]|0)+','+(pre[1]|0)+','+(pre[2]|0)+')';
-      ctx.fillRect(px-1,py-1,T+2,T+2);
+      // v59 — no WEST/NORTH margin (see paintTerrain twin)
+      ctx.fillRect(px,py,T+1,T+1);
       ctx.fillStyle=f.base;
       const rfa=T*.18;
       ctx.beginPath();
-      if(f.tl){ctx.moveTo(px+rfa,py);ctx.arcTo(px,py,px,py+rfa,rfa);}else{ctx.moveTo(px-1,py-1)}
-      if(f.bl){ctx.lineTo(px,y1-rfa);ctx.arcTo(px,y1,px+rfa,y1,rfa);}else{ctx.lineTo(px-1,y1+1)}
+      if(f.tl){ctx.moveTo(px+rfa,py);ctx.arcTo(px,py,px,py+rfa,rfa);}else{ctx.moveTo(px,py)}
+      if(f.bl){ctx.lineTo(px,y1-rfa);ctx.arcTo(px,y1,px+rfa,y1,rfa);}else{ctx.lineTo(px,y1+1)}
       if(f.br){ctx.lineTo(x1-rfa,y1);ctx.arcTo(x1,y1,x1,y1-rfa,rfa);}else{ctx.lineTo(x1+1,y1+1)}
-      if(f.tr){ctx.lineTo(x1,py+rfa);ctx.arcTo(x1,py,x1-rfa,py,rfa);}else{ctx.lineTo(x1+1,py-1)}
+      if(f.tr){ctx.lineTo(x1,py+rfa);ctx.arcTo(x1,py,x1-rfa,py,rfa);}else{ctx.lineTo(x1+1,py)}
       ctx.closePath();ctx.fill();
     }else{
       ctx.fillStyle=f.base;
-      ctx.fillRect(px-1,py-1,T+2,T+2);
+      // v58 — the -1/+2 margin is a seam bridge for water|water; toward
+      // LAND it stamped 1-2px of water onto the bank tiles' corners at
+      // every mixed corner. Overhang each edge only toward water.
+      const ov=_wOverhang(x,y);
+      const oW=(ov&1)?-1:0,oE=(ov&2)?1:0,oN=(ov&4)?-1:0,oS=(ov&8)?1:0;
+      ctx.fillRect(px+oW,py+oN,T+oE-oW,T+oS-oN);
     }
     return;
   }
@@ -6125,10 +6227,21 @@ function paintWater(ctx,x,y,T,time){
     function neighborColorW(tx,ty){
       const c=cellAt(tx,ty);
       if(c&&c.water) return [cR,cG,cB];
+      // v52 — SAND corners prefill SAND (see the fast-path twin above).
+      if((c?(c.depth||0):0)<2&&isSandAt(tx,ty)){
+        const vv=1+(fbm(tx*.35,ty*.35,3)-.5)*.10
+               +(fbm(tx*1.8+100,ty*1.8+100,2)-.5)*.05
+               +(fbm(tx*4.2+50,ty*4.2+50,1)-.5)*.03;
+        return [SAND_BASE[0]*vv,SAND_BASE[1]*vv,SAND_BASE[2]*vv];
+      }
       if(c&&c.terr!=='floor'&&ORES[c.terr]) return blendedLayerColor(tx,ty,c.depth||1);
       const d=c?c.depth:0;
       if(!c||d<1) return [140,180,95];
-      return blendedLayerColor(tx,ty,d);
+      const lc=blendedLayerColor(tx,ty,d);
+      const lv=1+(fbm(tx*.35,ty*.35,3)-.5)*.10
+             +(fbm(tx*1.8+100,ty*1.8+100,2)-.5)*.05
+             +(fbm(tx*4.2+50,ty*4.2+50,1)-.5)*.03;
+      return [lc[0]*lv,lc[1]*lv,lc[2]*lv];
     }
     let bgW=null;
     function tryCornerW(cx,cy,myQuad){
@@ -6150,7 +6263,8 @@ function paintWater(ctx,x,y,T,time){
     if(!bgW&&brR)tryCornerW(x+1,y+1,'NW');
     if(bgW){
       ctx.fillStyle=`rgb(${bgW[0]|0},${bgW[1]|0},${bgW[2]|0})`;
-      ctx.fillRect(px-1,py-1,T+2,T+2);
+      // v59 — no WEST/NORTH margin (see paintTerrain twin)
+      ctx.fillRect(px,py,T+1,T+1);
     }
   }
 
@@ -6158,11 +6272,14 @@ function paintWater(ctx,x,y,T,time){
   if(hasRounding){
     ctx.save();
     ctx.beginPath();
-    const o=1;
-    if(tlR){ctx.moveTo(px+rad,py);ctx.arcTo(px,py,px,py+rad,rad)}else{ctx.moveTo(px-o,py-o)}
-    if(blR){ctx.lineTo(px,y1-rad);ctx.arcTo(px,y1,px+rad,y1,rad)}else{ctx.lineTo(px-o,y1+o)}
-    if(brR){ctx.lineTo(x1-rad,y1);ctx.arcTo(x1,y1,x1,y1-rad,rad)}else{ctx.lineTo(x1+o,y1+o)}
-    if(trR){ctx.lineTo(x1,py+rad);ctx.arcTo(x1,py,x1-rad,py,rad)}else{ctx.lineTo(x1+o,py-o)}
+    // v59 — WEST/NORTH margins dropped (oW/oN=0): the -1 let this tile's
+    // clip (and everything painted inside it) reach 1px into the
+    // earlier-painted west/north neighbours.
+    const oW=0,oN=0,oE=1,oS=1;
+    if(tlR){ctx.moveTo(px+rad,py);ctx.arcTo(px,py,px,py+rad,rad)}else{ctx.moveTo(px-oW,py-oN)}
+    if(blR){ctx.lineTo(px,y1-rad);ctx.arcTo(px,y1,px+rad,y1,rad)}else{ctx.lineTo(px-oW,y1+oS)}
+    if(brR){ctx.lineTo(x1-rad,y1);ctx.arcTo(x1,y1,x1,y1-rad,rad)}else{ctx.lineTo(x1+oE,y1+oS)}
+    if(trR){ctx.lineTo(x1,py+rad);ctx.arcTo(x1,py,x1-rad,py,rad)}else{ctx.lineTo(x1+oE,py-oN)}
     ctx.closePath();
     ctx.clip();
   }
@@ -6171,7 +6288,13 @@ function paintWater(ctx,x,y,T,time){
   // across the river otherwise — neighboring tiles share edge samples, so
   // the water shades continuously bank to bank with no tile grid)
   ctx.fillStyle=bf.fill;
-  ctx.fillRect(px-1,py-1,T+2,T+2);
+  // v58 — overhang only toward water neighbors (see fast-path twin): the
+  // old -1/+2 margin painted water onto land corners at mixed corners.
+  {
+    const ov=_wOverhang(x,y);
+    const oW=(ov&1)?-1:0,oE=(ov&2)?1:0,oN=(ov&4)?-1:0,oS=(ov&8)?1:0;
+    ctx.fillRect(px+oW,py+oN,T+oE-oW,T+oS-oN);
+  }
 
   // === PER-TILE NOISE VARIATION ===
   // Same fbm approach as terrain tiles — gives organic color variation
@@ -6301,6 +6424,12 @@ function expandFloor(){
     const n=fbm(tx*0.5,ty*0.5,2);
     const threshold=0.35+(d/maxR)*0.2;  // harder to place near edges
     if(n>threshold||d<1.5){
+      // v51 — RIVERS STAY RIVERS (user: "on an expansion... ores get generated
+      // on the water"). offCellCreate() would STORE a cell that shadows the
+      // procedural water in cellAt() — the river would be paved over with ore
+      // and dirt. Skip water tiles entirely; the river keeps flowing through
+      // the claimed patch.
+      if(isWaterAt(tx,ty))continue;
       const k=oreAt(tx,ty);
       // v41 — SAND RULE for off-grid deposits (same rule as in-grid veins):
       // no ore terrain on sand except quartz. Claiming desert land yields
@@ -6445,6 +6574,10 @@ function buyTech(id){
 // ============================================================
 function entryFree(x,y,mdir){
   const c=cellAt(x,y);
+  // v50 — a belt painted during the LIVE drag is not live yet: nothing may
+  // enter it. Items would jam the moment the drag re-orients the belt under
+  // them; instead they queue on the previous belt until the drag ends.
+  if(c&&c.m&&G.drag&&G.drag.mode==='paint'&&c.m._fresh===G.drag.id)return false;
   // For bridges, only check items in the same axis (crossing lanes are independent)
   if(c&&c.m&&c.m.type==='bridge'&&mdir){
     const dirH=mdir==='E'||mdir==='W';
@@ -6813,7 +6946,11 @@ function deliver(x,y,mdir,type){
     if(hm.construction){
       const cc=hm.construction;
       const ft=m.feedItem;
-      if(!ft||!(ft in cc.need)||(cc.got[ft]||0)>=cc.need[ft])return false;
+      // v51 — the DELIVERED TYPE must match the chosen ingredient (user: the
+      // box "accepts any item thinking that it was it" — builders were usable
+      // as trashcans, junk in, nothing back). Wrong items bounce off and hold
+      // on the belt, exactly like a filter that doesn't want them.
+      if(!ft||type!==ft||!(ft in cc.need)||(cc.got[ft]||0)>=cc.need[ft])return false;
       cc.got[ft]=(cc.got[ft]||0)+1;
       cc.flashK=ft;cc.flashT=G.time;   // delivery flash on the box pip
       SFX.feed();
@@ -6904,6 +7041,10 @@ function processExcavator(m,x,y,dt){
   let coalIdx=m.inQ.indexOf('coal');
   const hasCoal = coalIdx>=0;
   const outFull = m.outQ.length>=qCap('excavator');
+  // v56 — outrigger legs deploy when the rig digs, fold to rest when idle
+  const _legT=(hasCoal&&!outFull)?1:.55;
+  const _legC=m._legExt===undefined?.55:m._legExt;
+  m._legExt=_legC+(_legT-_legC)*Math.min(1,dt*5);
   if(hasCoal && !outFull){
     // === BURN COAL → BUILD PROGRESS ===
     m.state='running';
@@ -7030,11 +7171,12 @@ function updMachines(dt){
       // depth<2, isSandAt) extracts the 'sand' item. Ore terrain still wins —
       // a copper vein on a beach is a copper tile that happens to be sandy.
       const onSand = cell.terr==='floor' && (cell.depth||0)<2 && isSandAt(x,y);
+      const onQ = onSand && quartzOutAt(x,y);   // v51 — quartz outcrop beats plain sand
       const onStone = cell.terr==='floor' && cell.depth && cell.depth>1;
-      const meta = onSand ? {item:'sand',lv:1,chance:1} : (onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr]);
+      const meta = onQ ? {item:'quartz',lv:1,chance:1} : (onSand ? {item:'sand',lv:1,chance:1} : (onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr]));
       const able=meta&&m.level>=meta.lv; // MK gate: upgrade the drill to mine richer ores
       // Refresh m.ore if the terrain changed (e.g. via purifyOres or excavator)
-      const wantOre = onSand ? 'sand' : (onStone ? 'stone' : ORE_OF[cell.terr]);
+      const wantOre = onQ ? 'quartz' : (onSand ? 'sand' : (onStone ? 'stone' : ORE_OF[cell.terr]));
       if(able && (!m.ore || m.ore!==wantOre))m.ore=wantOre;
       // If the drill has auto-modules and is mid-pipeline, don't start a new
       // drill cycle — wait for the pipeline to finish first (sequential).
@@ -7254,10 +7396,11 @@ function updMachines(dt){
         // v38 — SAND: off-grid grass riverbanks (virtual/stored cells, depth<2)
         // are beach tiles — drills extract 'sand' from them.
         const onSand = cell.terr==='floor' && (cell.depth||0)<2 && isSandAt(x,y);
+        const onQ = onSand && quartzOutAt(x,y);   // v51 — quartz outcrop beats plain sand
         const onStone = cell.terr==='floor' && cell.depth && cell.depth>1;
-        const meta = onSand ? {item:'sand',lv:1,chance:1} : (onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr]);
+        const meta = onQ ? {item:'quartz',lv:1,chance:1} : (onSand ? {item:'sand',lv:1,chance:1} : (onStone ? {item:'stone',lv:1,chance:1} : ORES[cell.terr]));
         const able=meta&&m.level>=meta.lv;
-        const wantOre = onSand ? 'sand' : (onStone ? 'stone' : ORE_OF[cell.terr]);
+        const wantOre = onQ ? 'quartz' : (onSand ? 'sand' : (onStone ? 'stone' : ORE_OF[cell.terr]));
         if(able && (!m.ore || m.ore!==wantOre))m.ore=wantOre;
         const pipelineBusy = hasAutoModules(m) && isPipelineBusy(m);
         if(able&&!pipelineBusy&&m.outQ.length<qCap(m)){
@@ -7400,6 +7543,9 @@ function updItems(dt){
       it.dead=true;const p=itemPos(it);burst(p.x,p.y,'#8a7a66',5,'smoke');continue;
     }
     const carrier=cell.m;
+    // v50 — frozen while its paint-drag is live: the belt under this item may
+    // still be re-oriented by the drag, so hold position until it ends.
+    if(G.drag&&G.drag.mode==='paint'&&carrier._fresh===G.drag.id)continue;
     const modSpeed=countModules(carrier,'speed');
     const modMult=1+0.5*modSpeed;  // additive (was Math.pow(1.5,modSpeed) multiplicative)
     const speed=BELT_TPS*(UP.belt?spdFn(carrier.level):1)*G.mods.belt*modMult;
@@ -8110,21 +8256,22 @@ function drawRefinery(g,px,py,s,m,time){
   const cx=px+s/2,cy=py+s/2;
   bld(g,px,py,s,'#46b5a4');outNotch(g,px,py,s,m.dir);
   const active=!!m.hold;
-  // flask
+  // flask — v55: raised .02s and slimmed the base .135->.125 so it clears
+  // the body's bottom-shade strip instead of kissing it.
   g.fillStyle='#fff';
   g.beginPath();
-  g.moveTo(cx-s*.045,cy-s*.17);g.lineTo(cx+s*.045,cy-s*.17);
-  g.lineTo(cx+s*.045,cy-s*.05);g.lineTo(cx+s*.135,cy+s*.14);
-  g.lineTo(cx-s*.135,cy+s*.14);g.lineTo(cx-s*.045,cy-s*.05);
+  g.moveTo(cx-s*.045,cy-s*.19);g.lineTo(cx+s*.045,cy-s*.19);
+  g.lineTo(cx+s*.045,cy-s*.06);g.lineTo(cx+s*.125,cy+s*.12);
+  g.lineTo(cx-s*.125,cy+s*.12);g.lineTo(cx-s*.045,cy-s*.06);
   g.closePath();g.fill();
   if(active){
     g.fillStyle='#46b5a4';
-    g.beginPath();g.moveTo(cx+s*.085,cy+s*.04);g.lineTo(cx+s*.115,cy+s*.115);
-    g.lineTo(cx-s*.115,cy+s*.115);g.lineTo(cx-s*.085,cy+s*.04);g.closePath();g.fill();
+    g.beginPath();g.moveTo(cx+s*.08,cy+s*.03);g.lineTo(cx+s*.108,cy+s*.1);
+    g.lineTo(cx-s*.108,cy+s*.1);g.lineTo(cx-s*.08,cy+s*.03);g.closePath();g.fill();
     for(let i=0;i<2;i++){
       const bt=(time*1.4+i*.5)%1;
       g.fillStyle=`rgba(255,255,255,${(1-bt)*.95})`;
-      g.beginPath();g.arc(cx+(i?-1:1)*s*.03,cy+s*.08-bt*s*.16,s*.018,0,7);g.fill();
+      g.beginPath();g.arc(cx+(i?-1:1)*s*.03,cy+s*.06-bt*s*.15,s*.018,0,7);g.fill();
     }
   }
   if(active)ring(g,cx,cy,s*.33,m.timer/INT.refinery,'rgba(255,255,255,.95)',s*.026);
@@ -8201,10 +8348,13 @@ function drawAssembler(g,px,py,s,m,time,P){
     g.fillStyle='#fff';rr(g,px+s*.58,py+s*.56,s*.32,s*.32,s*.1);g.fill();
     g.drawImage(itemSpr[m.recipe],px+s*.61,py+s*.59,s*.26,s*.26);
   }else{
-    g.fillStyle='rgba(255,255,255,.9)';
+    // v55 — empty recipe slot: the SAME white chip a set recipe gets, with a
+    // soft warm-grey '?' — the bare glyph read as a placeholder/artifact.
+    g.fillStyle='#fff';rr(g,px+s*.58,py+s*.56,s*.32,s*.32,s*.1);g.fill();
+    g.fillStyle='#a09478';
     g.font=`700 ${s*.19}px "Chakra Petch",sans-serif`;
     g.textAlign='center';g.textBaseline='middle';
-    g.fillText('?',px+s*.74,py+s*.72);
+    g.fillText('?',px+s*.74,py+s*.735);
   }
   if(m.recipe){
     const r=RECIPES[m.recipe];let i=0;
@@ -8359,135 +8509,54 @@ function blendColor(base, overlay, amount){
 // depending on what the host needs). A small port notch on the open side marks
 // where belts plug in. The host machine keeps its normal rounded corners — the
 // extender is clearly its own component, not a body extension.
-// Rustic-industrial windmill drawn BENEATH everything (called from render()
-// before drawRoadNetwork, so belts/bridges/machines paint over it).
-//
-// Footprint: 3×3 (rad=1) or 5×5 (rad=2) tiles, sized to match the excavator's
-// bore radius. The tower sits on the excavator's tile; long sails sweep the
-// surrounding footprint.
-//
-// Aesthetic: matches the game's industrial copper/cream/wood palette —
-// excavator-brown tower with copper trim, cream sailcloth with dark wood
-// spars, a copper hub. Slow idle spin; faster when excavator is active.
-function drawExcavatorWindmill(g,ex,ey,s,time,active,rad){
-  // rad=0 (1×1 bore) → 3×3 footprint (rad=1); rad=1+ → 5×5.
-  const wmd = rad>=2 ? 2 : 1;   // windmill half-extent in tiles
-  const cx=ex*T+T/2, cy=ey*T+T/2;
-  // Total sweep radius (so blade tips reach the footprint edge with margin).
-  const sweep = T * (wmd + 0.35);
-  // === stone foundation pad (covers the full footprint, under everything) ===
-  // Faint warm-gray slab — reads as "constructed platform" without obscuring terrain.
-  g.fillStyle='rgba(180,170,150,0.12)';
-  g.beginPath();
-  g.ellipse(cx, cy, sweep*1.05, sweep*1.05, 0, 0, 7);
-  g.fill();
-  // === ground shadow — topdown circle under the windmill base ===
-  g.fillStyle='rgba(0,0,0,0.15)';
-  g.beginPath();g.ellipse(cx, cy, sweep*.7, sweep*.7, 0, 0, 7);g.fill();
-  // === tower base (trapezoid, excavator-brown + cream trim) ===
-  // Scaled to the footprint — bigger windmill = sturdier tower.
-  const baseW=s*(0.30+wmd*0.10), baseTopW=s*(0.14+wmd*0.04), baseH=s*0.42;
-  // cream trim ring at the base
-  g.fillStyle='#fbf4dc';
-  g.beginPath();
-  g.moveTo(cx-baseW/2-s*.02, cy+s*.44);
-  g.lineTo(cx+baseW/2+s*.02, cy+s*.44);
-  g.lineTo(cx+baseW/2+s*.01, cy+s*.40);
-  g.lineTo(cx-baseW/2-s*.01, cy+s*.40);
-  g.closePath();g.fill();
-  // main tower (excavator brown)
-  g.fillStyle='#5a4a3a';
-  g.beginPath();
-  g.moveTo(cx-baseW/2, cy+s*.42);
-  g.lineTo(cx-baseTopW/2, cy+s*.42-baseH);
-  g.lineTo(cx+baseTopW/2, cy+s*.42-baseH);
-  g.lineTo(cx+baseW/2, cy+s*.42);
-  g.closePath();g.fill();
-  // tower shading (right side darker)
-  g.fillStyle='rgba(0,0,0,0.22)';
-  g.beginPath();
-  g.moveTo(cx, cy+s*.42);
-  g.lineTo(cx, cy+s*.42-baseH);
-  g.lineTo(cx+baseTopW/2, cy+s*.42-baseH);
-  g.lineTo(cx+baseW/2, cy+s*.42);
-  g.closePath();g.fill();
-  // copper trim band near the top of the tower
-  g.fillStyle='#e07a2e';
-  const bandY=cy+s*.42-baseH+s*.06;
-  const bandW=baseTopW+s*.04;
-  g.fillRect(cx-bandW/2, bandY, bandW, s*.04);
-  // wood grain horizontal lines on the tower
-  g.strokeStyle='rgba(110,80,40,0.45)';g.lineWidth=Math.max(1,s*.014);
-  for(let i=1;i<=3;i++){
-    const fy=cy+s*.42-baseH*(i/4);
-    const fw=baseTopW/2+(baseW/2-baseTopW/2)*(i/4);
-    g.beginPath();g.moveTo(cx-fw,fy);g.lineTo(cx+fw,fy);g.stroke();
-  }
-  // === hub (where blades attach) — copper dome ===
-  const hubX=cx, hubY=cy+s*.42-baseH;
-  const hubR=s*(0.07+wmd*0.015);
-  // hub shadow
-  g.fillStyle='rgba(0,0,0,0.35)';
-  g.beginPath();g.arc(hubX,hubY+s*.01,hubR,0,7);g.fill();
-  // copper dome
-  g.fillStyle='#c8861a';
-  g.beginPath();g.arc(hubX,hubY,hubR,0,7);g.fill();
-  // dome highlight
-  g.fillStyle='#e07a2e';
-  g.beginPath();g.arc(hubX-hubR*.25,hubY-hubR*.25,hubR*.6,0,7);g.fill();
-  // === blades (4 long sails, rotating) ===
-  // Idle = slow aesthetic spin; active = faster (wind picking up from the
-  // excavator's draw fan). Blade length = sweep radius (extends past footprint).
-  const spin=active?time*1.4:time*0.32;
-  const bladeLen=sweep;
-  const bladeW=s*(0.10+wmd*0.02);
-  g.save();
-  g.translate(hubX,hubY);
-  g.rotate(spin);
+// v52 — BORE ARMS (user: the rustic windmill "doesn't fit the game at all
+// and it looks weird"). The tower/sails are gone. The bore footprint is now
+// swept by the drill rig's OWN arms — flat machine-family strokes (white
+// rounded caps, copper tips, soft ground shadow) rotating around the
+// excavator: 3 arms on the 3x3 bore, 4 on the 5x5. Slow idle spin; faster
+// while mining. Drawn in the pre-road pass so belts/items/machines paint
+// over them exactly like the windmill did.
+// v56 — OUTRIGGERS: the excavator's stabilizer legs. The old spinning
+// sweeper arms didn't fit "a drill that got the Builder box" — a rig about
+// to dig braces itself instead. Four legs run diagonally from the machine
+// body's corners to the bore's corners (white strokes, copper foot pads —
+// the machine-kit language), drawn in the pre-road pass so belts, items and
+// machines paint over them. They fold to a resting reach when idle and
+// deploy to the bore corners while mining (m._legExt, lerped in
+// processExcavator); the pads piston subtly while the bit turns.
+function drawExcavatorOutriggers(g,ex,ey,s,time,active,rad,ext){
+  const cx=ex*s+s/2, cy=ey*s+s/2;
+  const r0=s*.50;                        // leave the body's corner
+  const r1=s*((rad+.5)*1.414-.20);       // foot just inside the bore corner
+  const tip=r0+(r1-r0)*ext;              // deployed reach
+  const DIAG=.70710678;
+  g.lineCap='round';
   for(let i=0;i<4;i++){
-    g.save();
-    g.rotate(i*Math.PI/2);
-    // shadow underside — drawn before sail via save/restore so it sits behind
-    g.save();
-    g.fillStyle='rgba(120,90,50,0.20)';
+    const sx=(i&1)?-1:1, sy=(i&2)?-1:1;  // the four corners
+    const dx=sx*DIAG, dy=sy*DIAG;
+    // soft ground shadow under the leg
+    g.strokeStyle='rgba(60,50,32,.16)';g.lineWidth=s*.066;
     g.beginPath();
-    g.moveTo(0, 0);
-    g.lineTo(bladeLen, 0);
-    g.lineTo(bladeLen, bladeW*0.35);
-    g.lineTo(0, bladeW/2);
-    g.closePath();g.fill();
-    g.restore();
-    // sail cloth (cream with subtle shading) — drawn on top
-    g.fillStyle='#fbf4dc';
+    g.moveTo(cx+dx*r0,cy+dy*r0+s*.03);
+    g.lineTo(cx+dx*tip,cy+dy*tip+s*.03);
+    g.stroke();
+    // the leg — the machine kit's white
+    g.strokeStyle='rgba(255,255,255,.58)';g.lineWidth=s*.048;
     g.beginPath();
-    g.moveTo(0, -bladeW/2);
-    g.lineTo(bladeLen, -bladeW*0.35);
-    g.lineTo(bladeLen, bladeW*0.35);
-    g.lineTo(0, bladeW/2);
-    g.closePath();g.fill();
-    // leading edge spar (dark wood)
-    g.strokeStyle='#3a2a1a';g.lineWidth=Math.max(1,s*.02);g.lineCap='round';
-    g.beginPath();g.moveTo(0,0);g.lineTo(bladeLen,0);g.stroke();
-    // copper rivets along the spar
-    g.fillStyle='#c8861a';
-    for(let b=1;b<=4;b++){
-      const bx=bladeLen*(b/5);
-      g.beginPath();g.arc(bx,0,s*.012,0,7);g.fill();
-    }
-    // cross battens
-    g.strokeStyle='rgba(90,70,50,0.55)';g.lineWidth=Math.max(.8,s*.012);
-    for(let b=1;b<=3;b++){
-      const bx=bladeLen*(b/4);
-      g.beginPath();g.moveTo(bx,-bladeW*0.4);g.lineTo(bx,bladeW*0.4);g.stroke();
-    }
-    g.restore();
+    g.moveTo(cx+dx*r0,cy+dy*r0);
+    g.lineTo(cx+dx*tip,cy+dy*tip);
+    g.stroke();
+    // white rivet where the leg leaves the body
+    g.fillStyle='rgba(255,255,255,.75)';
+    g.beginPath();g.arc(cx+dx*(r0+s*.035),cy+dy*(r0+s*.035),s*.016,0,7);g.fill();
+    // copper foot pad (+ piston bounce while mining)
+    const b=active?Math.sin(time*9+i*1.7)*s*.012:0;
+    const fx=cx+dx*(tip+b), fy=cy+dy*(tip+b);
+    g.fillStyle='#e07a2e';
+    g.beginPath();g.arc(fx,fy,s*.052,0,7);g.fill();
+    g.strokeStyle='rgba(0,0,0,.25)';g.lineWidth=Math.max(1,s*.012);
+    g.beginPath();g.arc(fx,fy,s*.052,0,7);g.stroke();
   }
-  g.restore();
-  // hub cap (on top of blades) — small copper nail
-  g.fillStyle='#8a5a1a';
-  g.beginPath();g.arc(hubX,hubY,hubR*.45,0,7);g.fill();
-  g.fillStyle='#e07a2e';
-  g.beginPath();g.arc(hubX-hubR*.12,hubY-hubR*.12,hubR*.22,0,7);g.fill();
 }
 function drawExcavator(g,px,py,s,m,time,cell){
   const cx=px+s/2,cy=py+s/2;
@@ -8504,7 +8573,7 @@ function drawExcavator(g,px,py,s,m,time,cell){
   const hasCoal=coalCount>0;
   const draining = !hasCoal && (m.noCoalTimer||0)>=EXCAVATOR_NO_COAL_GRACE && coalProgress>0;
 
-  // (Windmill is drawn separately in render() so it sits under belts/machines.)
+  // (Bore arms are drawn separately in render() so they sit under belts/machines.)
 
   // === RADIUS INDICATOR (dashed outline, drawn first so it's behind) ===
   if(rad>0){
@@ -8513,74 +8582,47 @@ function drawExcavator(g,px,py,s,m,time,cell){
     g.setLineDash([]);
   }
 
-  // (Radius arms removed — the dashed outline above shows the bore extent.
-  // The actual multi-tile mining is handled by processExcavator; no visual
-  // arms needed. They previously read as "weird black things" extending
-  // from the excavator body.)
+  // v52 — BUILDER UPGRADE ON A DRILL (user: "redesign the excavator, make it
+  // a builder upgrade on a drill"). The dark-steel octagonal rig is gone:
+  // the excavator is now the game's own DRILL machine — red bld() body,
+  // white ring, spinning bit in the pit — with the Builder's cardboard box
+  // bolted on top: the upgrade module that turned a shaft-drill into a
+  // bore-drill. Same machine kit, same language, unmistakably "a drill
+  // that got the builder treatment".
+  bld(g,px,py,s,'#e0533d');
+  outNotch(g,px,py,s,m.dir);
 
-  // v18 — grounding shadow, same offset/alpha language as bld() so the
-  // excavator sits on the ground like every other machine (light top-left)
-  g.fillStyle='rgba(60,50,32,.22)';
-  rr(g,px+s*.12,py+s*.16,s*.80,s*.80,s*.16);g.fill();
-  g.fillStyle='rgba(60,50,32,.10)';
-  rr(g,px+s*.15,py+s*.19,s*.78,s*.78,s*.16);g.fill();
-  // === TOPDOWN EXCAVATOR BODY ===
-  // Dark base plate (the hole frame)
-  g.fillStyle='rgba(40,30,20,.3)';
-  rr(g,px+s*.06,py+s*.06,s*.88,s*.88,s*.12);g.fill();
-
-  // Main body — dark steel octagonal platform (topdown view)
-  g.fillStyle='#3a3530';
-  rr(g,px+s*.10,py+s*.10,s*.80,s*.80,s*.15);g.fill();
-  // inner ring
-  g.fillStyle='#4a4035';
-  rr(g,px+s*.14,py+s*.14,s*.72,s*.72,s*.12);g.fill();
-  // top highlight
-  g.fillStyle='rgba(255,255,255,.08)';
-  rr(g,px+s*.16,py+s*.12,s*.68,s*.10,s*.06);g.fill();
-
-  // === CENTRAL DRILL HOLE — the pit being dug ===
-  const holeR=s*.22;
-  // dark hole
-  g.fillStyle='#1a1208';
-  g.beginPath();g.arc(cx,cy,holeR,0,7);g.fill();
-  // hole inner ring (depth shading)
+  // v56 — A DRILL THAT GOT THE BUILDER BOX (user: "the excavator is what
+  // happens if you upgrade a drill by placing the box on top"). The drill
+  // parts — white collar ring, dark pit, the drill's own 3-arc spinning
+  // auger — sit low in the tile, and the Builder box rides ON TOP as the
+  // upgrade module that turned a shaft drill into a bore drill. The box is
+  // drawn after the drill parts and covers the collar's top arc: a literal,
+  // readable "box on top".
+  const pcx=cx, pcy=cy+s*.18;          // pit center (clears the box)
   const info=layerInfoAt(minedDepth);
   const layerCols=['#bca070','#b67a6c','#928878','#5c5854','#3e3a36','#de6c2a'];
   const holeCol=info?layerCols[info.typeIdx]:'#888';
-  g.fillStyle=holeCol;
-  g.beginPath();g.arc(cx,cy,holeR*.7,0,7);g.fill();
-  g.fillStyle='rgba(0,0,0,.3)';
-  g.beginPath();g.arc(cx,cy,holeR*.4,0,7);g.fill();
+  const holeR=s*.175;
 
-  // === SPINNING DRILL BIT (in the hole, topdown view) ===
-  const spinSpeed=active?8:0;
+  // white collar ring around the pit (the drill's ring, under the box)
+  g.strokeStyle='rgba(255,255,255,.95)';g.lineWidth=s*.026;
+  g.beginPath();g.arc(pcx,pcy,s*.21,0,7);g.stroke();
+
+  // the pit: dark shaft + the layer being dug
+  g.fillStyle='#1a1208';
+  g.beginPath();g.arc(pcx,pcy,holeR,0,7);g.fill();
+  g.fillStyle=holeCol;
+  g.beginPath();g.arc(pcx,pcy,holeR*.72,0,7);g.fill();
+  g.fillStyle='rgba(0,0,0,.3)';
+  g.beginPath();g.arc(pcx,pcy,holeR*.4,0,7);g.fill();
+
+  // the drill's spinning auger bit — 3 white arcs (the drill's exact bit)
   g.save();
-  g.translate(cx,cy);
-  g.rotate(time*spinSpeed);
-  // Drill bit — cross/plus shape with spiral
-  const bitR=s*.14;
-  g.fillStyle='#c8861a';
-  g.strokeStyle='#8a5a1a';
-  g.lineWidth=s*.012;
-  // four arms
-  for(let i=0;i<4;i++){
-    g.save();
-    g.rotate(i*Math.PI/2);
-    g.beginPath();
-    g.moveTo(0,-s*.02);
-    g.lineTo(bitR,-s*.04);
-    g.lineTo(bitR*.8,0);
-    g.lineTo(bitR,s*.04);
-    g.lineTo(0,s*.02);
-    g.closePath();g.fill();g.stroke();
-    g.restore();
-  }
-  // center hub
-  g.fillStyle='#e07a2e';
-  g.beginPath();g.arc(0,0,s*.035,0,7);g.fill();
-  g.fillStyle='#8a5a1a';
-  g.beginPath();g.arc(0,0,s*.018,0,7);g.fill();
+  g.translate(pcx,pcy);
+  g.rotate(active?time*3.2:time*.35);
+  g.strokeStyle='#fff';g.lineWidth=s*.048;g.lineCap='round';
+  for(let i=0;i<3;i++){g.rotate(Math.PI*2/3);g.beginPath();g.arc(0,0,s*.11,0,1.4);g.stroke()}
   g.restore();
 
   // === DEBRIS / DUST (when active) ===
@@ -8588,81 +8630,81 @@ function drawExcavator(g,px,py,s,m,time,cell){
     for(let i=0;i<6;i++){
       const phase=(time*1.5+i*0.2)%1;
       const angle=i/6*Math.PI*2+time*0.5;
-      const dist=holeR+phase*s*.12;
+      const dist=holeR+phase*s*.11;
       const dx=Math.cos(angle)*dist;
       const dy=Math.sin(angle)*dist;
       const alpha=(1-phase)*0.6;
       const sz=s*.015*(1-phase*0.5);
       g.fillStyle='rgba('+holeCol.match(/\w\w/g).map(h=>parseInt(h,16)).join(',')+','+alpha+')';
-      g.fillRect(cx+dx-sz/2,cy+dy-sz/2,sz,sz);
+      g.fillRect(pcx+dx-sz/2,pcy+dy-sz/2,sz,sz);
     }
   }
 
-  // === STATUS OVERLAY (compact, top of the machine) ===
+  // the Builder's box, riding ON TOP of the drill (drawn after the collar,
+  // pit and dust so they pass under it; its beacon + strap-glint idle
+  // animation comes free from drawBuilderBox). The dark under-shadow sits
+  // on the drill body and sells the "mounted on top" depth.
+  g.fillStyle='rgba(35,28,18,.20)';
+  g.beginPath();g.ellipse(cx,py+s*.555,s*.29,s*.07,0,0,7);g.fill();
+  drawBuilderBox(g,cx,py+s*.28,s*.54,T*G.cam.zoom>100);
+
+  // === STATUS LINE (bottom edge — one line, always the same place) ===
+  // v56 — the status/progress readout moved to the bottom edge: the box owns
+  // the top of the machine now. Burn progress also rings the coal badge.
+  g.textAlign='center';g.textBaseline='middle';
   if(m.paused){
     // Legacy paused state — auto-cleared by processExcavator, but show
     // something sensible if a save loaded with paused=true.
     const pulse=0.5+0.5*Math.sin(time*3);
     g.fillStyle='rgba(224,122,46,'+(0.8+0.2*pulse)+')';
-    g.font='700 '+s*.09+'px "Chakra Petch",sans-serif';
-    g.textAlign='center';g.textBaseline='middle';
-    g.fillText('RESUMING',cx,py+s*.06);
+    g.font='700 '+s*.062+'px "Chakra Petch",sans-serif';
+    g.fillText('RESUMING',cx,py+s*.947);
   }else if(active){
-    // Progress as a ring around the drill hole
-    g.strokeStyle='rgba(0,0,0,.2)';g.lineWidth=s*.035;
-    g.beginPath();g.arc(cx,cy,holeR+s*.04,0,7);g.stroke();
-    if(prog>0)ring(g,cx,cy,holeR+s*.04,prog,'rgba(224,122,46,.9)',s*.035);
-    // coal progress text below
-    g.fillStyle='rgba(255,255,255,.8)';
+    g.fillStyle='rgba(255,255,255,.85)';
     g.font='600 '+s*.06+'px "Chakra Petch",sans-serif';
-    g.textAlign='center';g.textBaseline='middle';
-    g.fillText(Math.round(coalProgress)+'/'+EXCAVATOR_COAL_PER_BLOCK,cx,py+s*.93);
+    g.fillText(Math.round(coalProgress)+'/'+EXCAVATOR_COAL_PER_BLOCK+' coal',cx,py+s*.947);
   }else if(draining){
-    // Draining — red ring shrinking
-    g.strokeStyle='rgba(216,67,46,.3)';g.lineWidth=s*.035;
-    g.beginPath();g.arc(cx,cy,holeR+s*.04,0,7);g.stroke();
-    if(prog>0)ring(g,cx,cy,holeR+s*.04,prog,'rgba(216,67,46,.8)',s*.035);
-    g.fillStyle='rgba(216,67,46,.9)';
-    g.font='700 '+s*.06+'px "Chakra Petch",sans-serif';
-    g.textAlign='center';g.textBaseline='middle';
-    g.fillText('DRAINING',cx,py+s*.06);
-    g.font='600 '+s*.05+'px "Chakra Petch",sans-serif';
-    g.fillStyle='rgba(255,255,255,.6)';
-    g.fillText('-'+EXCAVATOR_DRAIN_PER_SEC+'/s',cx,py+s*.93);
+    g.fillStyle='rgba(216,67,46,.95)';
+    g.font='700 '+s*.062+'px "Chakra Petch",sans-serif';
+    g.fillText('DRAINING -'+EXCAVATOR_DRAIN_PER_SEC+'/s',cx,py+s*.947);
   }else if(!hasCoal){
     g.fillStyle='rgba(216,67,46,.9)';
-    g.font='700 '+s*.08+'px "Chakra Petch",sans-serif';
-    g.textAlign='center';g.textBaseline='middle';
-    g.fillText('NO COAL',cx,py+s*.06);
-    // Show grace timer if still in grace period
+    g.font='700 '+s*.062+'px "Chakra Petch",sans-serif';
     if(coalProgress>0){
       const grace=Math.max(0, EXCAVATOR_NO_COAL_GRACE-(m.noCoalTimer||0));
-      g.font='600 '+s*.05+'px "Chakra Petch",sans-serif';
-      g.fillStyle='rgba(255,255,255,.5)';
-      g.fillText(grace.toFixed(1)+'s grace',cx,py+s*.93);
+      g.fillText('NO COAL · '+grace.toFixed(1)+'s',cx,py+s*.947);
+    }else{
+      g.fillText('NO COAL',cx,py+s*.947);
     }
   }
 
-  // === COAL BADGE (top-left corner) ===
+  // === COAL BADGE + BURN GAUGE (bottom-left) ===
+  const cbx=px+s*.12, cby=py+s*.88;
+  if(active||draining){
+    // burn-progress gauge ring (copper while running, red while draining)
+    g.strokeStyle=active?'rgba(224,122,46,.9)':'rgba(216,67,46,.8)';
+    g.lineWidth=Math.max(1.5,s*.02);
+    g.beginPath();g.arc(cbx,cby,s*.075,-Math.PI/2,-Math.PI/2+prog*Math.PI*2);g.stroke();
+  }
   g.fillStyle='#2a2520';
-  g.beginPath();g.arc(px+s*.12,py+s*.12,s*.05,0,7);g.fill();
+  g.beginPath();g.arc(cbx,cby,s*.05,0,7);g.fill();
   g.strokeStyle='rgba(255,255,255,.2)';g.lineWidth=1;
-  g.beginPath();g.arc(px+s*.12,py+s*.12,s*.05,0,7);g.stroke();
+  g.beginPath();g.arc(cbx,cby,s*.05,0,7);g.stroke();
   if(coalCount>0){
     g.fillStyle='rgba(255,255,255,.9)';
     g.font='700 '+s*.06+'px "Chakra Petch",sans-serif';
     g.textAlign='center';g.textBaseline='middle';
-    g.fillText(coalCount,px+s*.12,py+s*.12);
+    g.fillText(coalCount,cbx,cby);
   }
 
-  // === LAYER BADGE (top-right) ===
+  // === LAYER BADGE (top-right — clear of the box's right rail) ===
   const typeLetter=info?info.name[0].toUpperCase():'?';
   g.fillStyle='rgba(0,0,0,.35)';
-  rr(g,px+s*.72-s*.06,py+s*.08-s*.05,s*.12,s*.10,s*.02);g.fill();
+  rr(g,px+s*.86-s*.055,py+s*.09-s*.05,s*.11,s*.10,s*.02);g.fill();
   g.fillStyle=holeCol;
-  g.font='700 '+s*.065+'px "Chakra Petch",sans-serif';
+  g.font='700 '+s*.062+'px "Chakra Petch",sans-serif';
   g.textAlign='center';g.textBaseline='middle';
-  g.fillText(typeLetter+minedDepth,px+s*.72,py+s*.08);
+  g.fillText(typeLetter+minedDepth,px+s*.86,py+s*.09);
 
   // === COAL FLAME (when burning) ===
   if(hasCoal&&!m.paused){
@@ -8679,143 +8721,106 @@ function drawExcavator(g,px,py,s,m,time,cell){
   queueDots(g,px,py,s,m);levelPips(g,px,py,s,m.level);
 }
 function drawExtender(g,x,y,px,py,s,m,time){
-  const host=extenderHost(x,y,m);
-  // host body color — used for the connector cable + ring + glow, so the
-  // extender visually "belongs to" its host without copying the host's body.
+  const host0=extenderHost(x,y,m);
+  // v56 — THE EXTENDER IS THE HOST MACHINE'S ARM (user: "completely remodel
+  // the extender, its arm"). The old "separate module + cable" read as a
+  // stray widget glued to the machine's side. The new design is a single
+  // articulated ARM in the host's own color: a shoulder joint bolted to the
+  // host's body edge, a boom across the tile, and a socket head at the open
+  // side where belts plug in. Machine + arm read as ONE piece of equipment.
+  // A boxed host gets the Builder tan (the arm plugs into the BOX).
+  let host=host0;
+  if(!host&&m.dir){   // placement ghost: aim + host color from the neighbour
+    const nc=cellAt(x+DV[m.dir].x,y+DV[m.dir].y);
+    if(nc&&nc.m)host={m:nc.m};
+  }
   let hostCol='#8a9aa8';
   if(host&&host.m){
     const ht=host.m.type;
     hostCol=HOST_COLORS[ht]||hostCol;
     if(ht==='fabricator')hostCol=FAB_PAL.body;
     else if(ht==='assembler')hostCol=ASM_PAL.body;
+    if(host.m.construction)hostCol=HOST_COLORS.builder;
   }
-  const hd=m.hostDir;
-  const open=OPP[hd];               // open side (where belts connect)
+  const hd=m.hostDir||m.dir||'W';       // ghost extenders carry dir only
+  const open=OPP[hd];                   // open side (where belts connect)
   const cx=px+s/2, cy=py+s/2;
+  // v56 — was time*.004 with time in SECONDS (frozen); now a real pulse
+  const chevPulse=0.55+0.45*Math.sin(time*2.2+(x*0.3+y*0.5));
+  const feeding=m.feedItem&&host&&host.m&&host.m.construction&&itemSpr[m.feedItem];
 
-  // Compact body — ~56% of tile, centered but nudged slightly toward the open
-  // side so there's room for the connector cable on the host side.
-  const bw=s*.56, bh=s*.56;
-  const nudge=s*.05;
-  let bx, by;
-  if(hd==='E'      ){bx=cx-bw/2+nudge; by=cy-bh/2;}
-  else if(hd==='W' ){bx=cx-bw/2-nudge; by=cy-bh/2;}
-  else if(hd==='S' ){bx=cx-bw/2;       by=cy-bh/2+nudge;}
-  else              {bx=cx-bw/2;       by=cy-bh/2-nudge;} // N
-
-  // Soft outer glow — pulses gently, host color, sits under everything else.
-  const pulse=0.5+0.5*Math.sin(time*.003+(x*0.7+y*0.5));
   g.save();
-  g.globalAlpha=0.12+0.08*pulse;
+  g.translate(cx,cy);
+  g.rotate(({E:0,S:Math.PI/2,W:Math.PI,N:-Math.PI/2})[open]||0);  // +x = open side
+
+  // v57 — CONNECTED + BIG (user: "they aren't connected... has to be big
+  // enough, no issue with the belt stub touching"). The shoulder now bolts
+  // ONTO the host's body (disc reaches -.745s, .125s PAST the painted body
+  // edge at -.62s — a real overlap, no AA seam), the boom is a beefier
+  // +-0.185s limb, and the socket head is a chunky port block that reaches
+  // .10s PAST the tile edge so the belt stub's round cap is fully received
+  // — the belt road emerges from behind the dark port face, plugged in.
+
+  // -- whole-arm drop shadow (starts AT the host's body edge; the disc
+  //    itself sits ON the machine, so no shadow is painted on its deck) --
+  g.fillStyle='rgba(60,50,32,.20)';
+  rr(g,s*(-.62),s*(-.215),s*1.26,s*.47,s*.15);g.fill();
+
+  // -- boom: the arm limb, host color + bld() body treatment --
   g.fillStyle=hostCol;
-  rr(g, bx-s*.07, by-s*.07, bw+s*.14, bh+s*.14, s*.18); g.fill();
-  g.restore();
+  rr(g,s*(-.70),s*(-.185),s*1.00,s*.37,s*.17);g.fill();
+  g.fillStyle='rgba(255,255,255,.20)';
+  rr(g,s*(-.66),s*(-.185),s*.92,s*.065,s*.032);g.fill();
+  g.fillStyle='rgba(0,0,0,.14)';
+  rr(g,s*(-.66),s*(.12),s*.92,s*.065,s*.032);g.fill();
 
-  // Drop shadow under the body — same convention as bld(), but smaller.
-  g.fillStyle='rgba(60,50,32,.28)';
-  rr(g, bx+s*.025, by+s*.055, bw, bh, s*.15); g.fill();
-  g.fillStyle='rgba(60,50,32,.12)';
-  rr(g, bx+s*.04, by+s*.08, bw, bh, s*.15); g.fill();
-
-  // Body — dark gunmetal capsule, clearly distinct from any host color.
-  const bodyCol='#2c3340';
-  g.fillStyle=bodyCol;
-  rr(g, bx, by, bw, bh, s*.15); g.fill();
-
-  // Top highlight + bottom shadow strips — matches the bld() shading language
-  // so the extender reads as the same "family" as other machines.
-  g.fillStyle='rgba(255,255,255,.16)';
-  rr(g, bx+s*.05, by+s*.04, bw-s*.10, bh*.22, s*.08); g.fill();
-  g.fillStyle='rgba(0,0,0,.32)';
-  rr(g, bx+s*.05, by+bh-s*.04-bh*.22, bw-s*.10, bh*.22, s*.08); g.fill();
-
-  // Inner panel — slightly inset, outlined in the host color. This is the
-  // "port face" that holds the flow indicator.
+  // -- shoulder joint: pivot disc bolted ON the host's body --
+  //    (r .17 centered at -.575 spans -.745..-.405: overlaps the host's
+  //    -.62 body edge by .125s — the arm can not read as detached)
+  g.fillStyle=hostCol;
+  g.beginPath();g.arc(s*(-.575),0,s*.17,0,7);g.fill();
+  g.strokeStyle='rgba(255,255,255,.35)';g.lineWidth=s*.02;
+  g.beginPath();g.arc(s*(-.575),0,s*.17,0,7);g.stroke();
   g.fillStyle='#1a1f29';
-  rr(g, bx+s*.08, by+s*.08, bw-s*.16, bh-s*.16, s*.10); g.fill();
-  g.strokeStyle=hostCol;
-  g.lineWidth=Math.max(1.5, s*.022);
-  rr(g, bx+s*.08, by+s*.08, bw-s*.16, bh-s*.16, s*.10); g.stroke();
+  g.beginPath();g.arc(s*(-.575),0,s*.093,0,7);g.fill();
+  g.fillStyle='rgba(255,255,255,.5)';
+  g.beginPath();g.arc(s*(-.60),s*(-.034),s*.022,0,7);g.fill();
 
-  // Bidirectional flow chevrons — two chevrons, one pointing toward the host
-  // (input), one toward the open side (output). Pulse with time so the port
-  // reads as "active". Drawn in a rotated frame where +x = toward host.
-  const chevPulse=0.55+0.45*Math.sin(time*.004+(x*0.3+y*0.5));
-  g.save();
-  g.translate(cx, cy);
-  const rotMap={E:0, S:Math.PI/2, W:Math.PI, N:-Math.PI/2};
-  g.rotate(rotMap[hd]||0);
-  // Now host is at +x, open side is at -x.
-  g.fillStyle=`rgba(255,255,255,${0.65+0.35*chevPulse})`;
-  const chLen=s*.085;    // chevron length (pointing direction)
-  const chHalf=s*.075;   // chevron half-height
-  const chThick=s*.035;  // chevron thickness (inner point depth)
-  const chOff=s*.035;    // offset from center
-  // Right chevron (pointing toward host)
-  g.beginPath();
-  g.moveTo(chOff,           -chHalf);
-  g.lineTo(chOff+chLen,      0);
-  g.lineTo(chOff,            chHalf);
-  g.lineTo(chOff+chLen-chThick, 0);
-  g.closePath(); g.fill();
-  // Left chevron (pointing toward open side)
-  g.beginPath();
-  g.moveTo(-chOff,          -chHalf);
-  g.lineTo(-chOff-chLen,     0);
-  g.lineTo(-chOff,           chHalf);
-  g.lineTo(-chOff-chLen+chThick, 0);
-  g.closePath(); g.fill();
-  // Tiny center dot — the "data junction" between the two chevrons.
-  g.beginPath();
-  g.arc(0, 0, s*.022, 0, Math.PI*2); g.fill();
-  g.restore();
-
-  // v49 — construction interface: show WHICH ingredient this extender feeds
-  // (a white item badge ringed in the host color, like the trader's recipe
-  // badge). Unpicked interfaces stay bare — pick one in the extender's panel.
-  if(m.feedItem&&host&&host.m&&host.m.construction&&itemSpr[m.feedItem]){
-    g.fillStyle='#fff';
-    g.beginPath();g.arc(cx,cy,s*.17,0,7);g.fill();
-    g.strokeStyle=hostCol;g.lineWidth=Math.max(1.5,s*.022);
-    g.beginPath();g.arc(cx,cy,s*.17,0,7);g.stroke();
-    g.drawImage(itemSpr[m.feedItem],cx-s*.12,cy-s*.12,s*.24,s*.24);
-  }
-  // Connector cable — a short thick line from the body's host-facing edge to
-  // the tile boundary, in the host color. This is what makes the extender
-  // visibly "plugged into" the host machine.
-  const connW=s*.18;
-  // The host machine's body is inset s*.12 from its tile edge, so the cable
-  // must reach past the tile boundary by s*.12 to actually touch the host.
-  const reach=s*.12;
+  // -- socket head: the chunky port block at the open side --
+  //    (+.08..+.60 — the face rides .10s PAST the tile edge and takes the
+  //    belt stub's incoming cap: belts plug IN, they don't hover nearby)
   g.fillStyle=hostCol;
-  if(hd==='E'      ){g.fillRect(bx+bw, cy-connW/2, (px+s)-(bx+bw)+reach, connW);}
-  else if(hd==='W' ){g.fillRect(px-reach, cy-connW/2, bx-px+reach,        connW);}
-  else if(hd==='S' ){g.fillRect(cx-connW/2, by+bh, connW, (py+s)-(by+bh)+reach);}
-  else              {g.fillRect(cx-connW/2, py-reach, connW, by-py+reach);}  // N
+  rr(g,s*(.08),s*(-.28),s*.52,s*.56,s*.12);g.fill();
+  g.fillStyle='rgba(255,255,255,.20)';
+  rr(g,s*(.105),s*(-.28),s*.44,s*.075,s*.037);g.fill();
+  g.fillStyle='rgba(0,0,0,.14)';
+  rr(g,s*(.105),s*(.205),s*.44,s*.075,s*.037);g.fill();
+  // dark inset port face, flush with the head's front edge
+  g.fillStyle='#1a1f29';
+  rr(g,s*(.40),s*(-.155),s*.20,s*.31,s*.05);g.fill();
+  g.strokeStyle=hostCol;g.lineWidth=Math.max(1.5,s*.02);
+  rr(g,s*(.40),s*(-.155),s*.20,s*.31,s*.05);g.stroke();
+  // twin chevrons pointing INTO the host (-x) — "feed this way"
+  // (hidden while the feed badge shows — the badge IS the port face then)
+  if(!feeding){
+    g.fillStyle=`rgba(255,255,255,${0.55+0.35*chevPulse})`;
+    const chL=s*.048,chHalf=s*.055,chT=s*.026;
+    for(const xa of [s*(.445),s*(.525)]){
+      g.beginPath();
+      g.moveTo(xa+chL,-chHalf);g.lineTo(xa,0);g.lineTo(xa+chL,chHalf);g.lineTo(xa+chL-chT,0);
+      g.closePath();g.fill();
+    }
+  }
 
-  // Plug end-cap — sits at the HOST end of the cable (where it plugs into
-  // the host machine's body), giving the cable a clear "socket" silhouette.
-  const plugCol=blendColor(hostCol,'#000000',0.28);
-  g.fillStyle=plugCol;
-  const plugW=s*.10, plugT=connW+s*.04;
-  if(hd==='E'      ){rr(g, px+s+reach-plugW,   cy-plugT/2, plugW, plugT, s*.03); g.fill();}
-  else if(hd==='W' ){rr(g, px-reach,            cy-plugT/2, plugW, plugT, s*.03); g.fill();}
-  else if(hd==='S' ){rr(g, cx-plugT/2, py+s+reach-plugW,   plugT, plugW, s*.03); g.fill();}
-  else              {rr(g, cx-plugT/2, py-reach,            plugT, plugW, s*.03); g.fill();} // N
-
-  // Open-side port notch — small bright marker where belts plug in. Sits on
-  // the open edge of the body, mirroring the outNotch() convention used by
-  // other machines.
-  g.fillStyle='rgba(255,255,255,.92)';
-  const pn=s*.055;
-  if(open==='E'      ){rr(g, bx+bw-pn,        cy-pn/2,     pn,        pn,        s*.02); g.fill();}
-  else if(open==='W' ){rr(g, bx,              cy-pn/2,     pn,        pn,        s*.02); g.fill();}
-  else if(open==='S' ){rr(g, cx-pn/2,         by+bh-pn,    pn,        pn,        s*.02); g.fill();}
-  else                {rr(g, cx-pn/2,         by,          pn,        pn,        s*.02); g.fill();} // N
-
-  // Level pips — extender level mirrors host, so usually no pips draw, but
-  // keep the call for consistency with other machines.
-  levelPips(g,px,py,s,m.level);
+  // -- ingredient badge: which item this arm feeds (white chip, host ring) --
+  if(feeding){
+    g.fillStyle='#fff';
+    g.beginPath();g.arc(s*(.30),0,s*.165,0,7);g.fill();
+    g.strokeStyle=hostCol;g.lineWidth=Math.max(1.5,s*.02);
+    g.beginPath();g.arc(s*(.30),0,s*.165,0,7);g.stroke();
+    g.drawImage(itemSpr[m.feedItem],s*(.30)-s*.125,-s*.125,s*.25,s*.25);
+  }
+  g.restore();
 }
 function drawExtenderBridges(g,x,y,px,py,s,m){}
 // v39 — FURNACE (Smelter upgrade): hotter body, twin crucibles joined by a
@@ -8839,9 +8844,14 @@ function drawFurnace(g,px,py,s,m,time){
     if(active){g.fillStyle='#f0913b';g.beginPath();g.arc(0,s*.045,s*.042,0,7);g.fill()}
     g.restore();
   }
-  // connecting flow channel between the crucibles
-  g.fillStyle=active?'#f0913b':'rgba(255,255,255,.75)';
-  rr(g,cx-s*.10,cy+s*.02,s*.20,s*.045,s*.02);g.fill();
+  // connecting flow channel between the crucibles — v55: reads as a cast
+  // pipe now (dark groove + light inner bore); the old idle solid-white bar
+  // read as a stray artifact line between the droplets. Molten orange flow
+  // only when active.
+  g.fillStyle='rgba(0,0,0,.18)';
+  rr(g,cx-s*.115,cy+s*.012,s*.23,s*.062,s*.031);g.fill();
+  g.fillStyle=active?'#f0913b':'rgba(255,255,255,.28)';
+  rr(g,cx-s*.095,cy+s*.022,s*.19,s*.042,s*.021);g.fill();
   // two intake hoppers on the back edge (multi-input read)
   g.fillStyle='rgba(255,255,255,.9)';
   rr(g,cx-s*.30,cy-s*.27,s*.11,s*.08,s*.02);g.fill();
@@ -8865,6 +8875,10 @@ function drawBuilderBox(g,cx,cy,sz,det){
   const px=cx-sz/2,py=cy-sz/2;
   bld(g,px,py,sz,HOST_COLORS.builder);
   const B=sz*.76,x=px+sz*.12,y=py+sz*.12;   // bld's body rect
+  // v51 — idle clock: hazard beacon + strap glint animate on the game clock
+  // so the box never sits dead while it waits for parts (also animates the
+  // placement ghost — G is guarded for standalone preview embeds).
+  const tid=(typeof G!=='undefined'&&G&&G.time)?G.time:0;
   // top flap seam (vertical center line) + fold marks
   g.strokeStyle='#8a6234';g.lineWidth=Math.max(1,sz*.04);g.lineCap='round';
   g.beginPath();g.moveTo(cx,y+sz*.07);g.lineTo(cx,y+B-sz*.07);g.stroke();
@@ -8881,18 +8895,20 @@ function drawBuilderBox(g,cx,cy,sz,det){
   g.fillStyle='rgba(0,0,0,.14)';
   g.fillRect(cx-B/2-sz*.01,cy-sz*.075,B+sz*.02,sz*.026);
   g.fillRect(cx-B/2-sz*.01,cy+sz*.049,B+sz*.02,sz*.026);
-  // steel corner brackets (+ bolts)
-  const bw=sz*.15,bt=sz*.045;
-  for(const[qx,qy]of[[-1,-1],[1,-1],[1,1],[-1,1]]){
-    const px2=qx>0?x+B-bw:x,py2=qy>0?y+B-bt:y;
-    g.fillStyle='#9aa4b0';
-    g.fillRect(px2,py2,bw,bt);
-    g.fillRect(qx>0?x+B-bt:x,qy>0?y+B-bw:y,bt,bw);
-    if(det!==false){
-      g.fillStyle='#3a3f4a';
-      g.beginPath();g.arc(px2+bw*.5,py2+bt*.5,Math.max(.6,sz*.02),0,7);g.fill();
-    }
-  }
+  // v51 — idle glint: a courier-scanner band sweeps along the strap every few
+  // seconds (the box "checking its label" while it waits). Clipped to the
+  // strap, fades in/out at the ends — pure globalAlpha, no new palette.
+  const gp=(tid%3.4)/3.4;
+  g.save();
+  g.beginPath();g.rect(cx-B/2-sz*.01,cy-sz*.075,B+sz*.02,sz*.15);g.clip();
+  g.globalAlpha=.34*Math.sin(gp*Math.PI);
+  g.fillStyle='#fff';
+  g.save();g.translate(cx-B/2+gp*(B+sz*.06),cy-sz*.075);g.rotate(.35);
+  g.fillRect(-sz*.02,-sz*.2,sz*.045,sz*.55);
+  g.restore();
+  g.restore();
+  // v52 — the four grey steel corner brackets are GONE (user: "remove the
+  // 4 grey corners") — the seam, strap, hazard chip and label carry the box.
   if(det!==false){
     // hazard-stripe chip (top-left, diagonal stripes clipped to the chip)
     const hx=x+sz*.09,hy=y+sz*.22,hw=sz*.16;
@@ -8902,6 +8918,11 @@ function drawBuilderBox(g,cx,cy,sz,det){
     g.fillStyle='#3a3a40';g.fillRect(-hw,-hw,hw*2,hw*2);
     g.fillStyle='#e8862e';
     for(let i=-3;i<=3;i++)g.fillRect(i*sz*.07-sz*.015,-hw,sz*.03,hw*2);
+    // v51 — idle beacon: the hazard stripes pulse warm like a road-work light
+    g.globalAlpha=.22+.26*(0.5+0.5*Math.sin(tid*3.1));
+    g.fillStyle='#ffd27a';
+    for(let i=-3;i<=3;i++)g.fillRect(i*sz*.07-sz*.015,-hw,sz*.03,hw*2);
+    g.globalAlpha=1;
     g.restore();
     // shipping label (bottom-right)
     g.fillStyle='#f4ecd6';
@@ -8922,7 +8943,7 @@ function drawConstructionBox(g,px,py,s,m,time){
   const c=m.construction;if(!c)return;
   const det=T*G.cam.zoom>100;   // LOD: chip/label/bolts only when close
   const t=c.boxT!==undefined?G.time-c.boxT:1e9;
-  let dy=0,sq=1;
+  let dy=0,sq=1,br=1;
   if(t<BUILDER_FALL){
     const f=Math.max(t,0)/BUILDER_FALL;
     dy=-(1-f*f)*s*2.1;
@@ -8932,19 +8953,21 @@ function drawConstructionBox(g,px,py,s,m,time){
   }else if(t<BUILDER_FALL+.18){
     const it=(t-BUILDER_FALL)/.18;
     sq=1-.16*Math.sin(it*Math.PI);
+  }else{
+    // v51 — BUILDER IDLE (user: "animate the builder with idle animation"):
+    // once settled, the box breathes with the exact idle idiom active
+    // machines use (same ±1.2% sine, same speed) — alive, never twitchy.
+    br=1+Math.sin((time||0)*2.4+px*.13+py*.07)*.012;
   }
   g.save();
   g.translate(px+s/2,py+s/2+dy);
-  const sqy=sq,sqx=2-sq;
+  const sqy=sq*br,sqx=(2-sq)*br;
   g.scale(sqx,sqy);
   drawBuilderBox(g,0,0,s,det);
   g.restore();
-  // final-assembly progress ring — the machine-family read for "working"
-  let gotAll=0,needAll=0;
-  for(const k in c.need){gotAll+=Math.min(c.got[k]||0,c.need[k]);needAll+=c.need[k]}
-  if(needAll>0&&gotAll>=needAll){
-    ring(g,px+s/2,py+s/2,s*.30,Math.min(c.buildT/BUILD_TIME,1),'rgba(255,255,255,.95)',s*.034);
-  }
+  // v52 — the outer assembly ring is GONE: the loading bar now lives
+  // dead-center on the strap (drawConstructionSiteUI) and its amber+glint
+  // phase carries the final-assembly read on its own.
 }
 // v49 — the box's own UI, drawn on/around the COVERED box: ingredient pips
 // under the bottom edge (extender-wired = white ring + fill sweep; delivery
@@ -8975,13 +8998,16 @@ function drawConstructionSiteUI(g,x,y,px,py,s,m,time){
       g.closePath();g.fill();
     }
   }
-  // progress bar — feed % in copper, final assembly in amber with a glint
+  // progress bar — feed % in copper, final assembly in amber with a glint.
+  // v52 — the bar sits DEAD CENTER ON TOP of the copper strap band (user:
+  // "the loading progress thingy for the box in the center on top of the
+  // band") — the strap reads as the box's loading rail.
   let gotAll=0,needAll=0;
   for(const k of ings){gotAll+=Math.min(c.got[k]||0,c.need[k]);needAll+=c.need[k]}
   const all=needAll>0&&gotAll>=needAll;
   const p2=all?Math.min(c.buildT/BUILD_TIME,1):gotAll/Math.max(needAll,1);
-  const bw=s*.56,bh=Math.max(3,s*.07);
-  const bx=cx-bw/2,by=py+s*.245;
+  const bw=s*.62,bh=Math.max(3,s*.062);
+  const bx=cx-bw/2,by=py+s/2-bh/2;
   g.fillStyle='rgba(35,28,18,.55)';
   rr(g,bx-1.5,by-1.5,bw+3,bh+3,bh/2);g.fill();
   g.fillStyle='rgba(255,255,255,.16)';
@@ -9088,7 +9114,7 @@ function drawMachine(g,x,y,px,py,s,m,time,cell){
     const gl=0.5+0.5*Math.sin(time*3+x+y);
     const col=m.construction?'232,160,90':m.type==='smelter'?'255,140,60':m.type==='drill'?'224,138,60':
               (m.type==='assembler'||m.type==='fabricator'||m.type==='manufacturer')?'120,170,230':
-              m.type==='trader'?'64,208,240':m.type==='excavator'?'180,140,80':'150,200,120';
+              m.type==='trader'?'64,208,240':m.type==='excavator'?'224,138,60':'150,200,120';
     g.save();
     g.globalAlpha=0.10+0.10*gl;
     g.fillStyle=`rgb(${col})`;
@@ -9107,7 +9133,11 @@ function drawMachine(g,x,y,px,py,s,m,time,cell){
   // transform: placement pop + gentle idle breathing for producers
   let k=1;
   if(m.pop>0)k*=1+Math.sin(Math.min(m.pop,1.5)*Math.PI)*.1;
-  if(active&&m.type!=='belt'&&m.type!=='splitter'&&m.type!=='bridge'&&m.type!=='seller')
+  // v52 — EVERY machine idles alive (user: "add subtle animations to
+  // basically everything"): the ±1.2% family breathing runs whether the
+  // machine is working or parked. Belts/splitters/bridges/filters stay
+  // still — infrastructure must butt seamlessly against its neighbours.
+  if(m.type!=='belt'&&m.type!=='splitter'&&m.type!=='bridge'&&m.type!=='filter')
     k*=1+Math.sin(time*2.4+x*1.3+y*0.7)*.012;
   const transformed=k!==1;
   if(transformed){g.save();g.translate(cx,cy);g.scale(k,k);g.translate(-cx,-cy)}
@@ -9250,7 +9280,61 @@ function drawTerrainDetail(ctx,bx0,by0,bx1,by1){
     const h=_hash2(x*7+3,y*7+11);
     const h2=_hash2(x*13+5,y*13+2);
     const px=x*T,py=y*T;
-    {
+    // v52 — EQUAL DETAIL, DIFFERENT LANGUAGE (user: "when I meant equal
+    // detailing on grass and sand I do not remember saying make it the same
+    // thing"). Grass gets BLADE TUFTS, sand gets WIND RIPPLES + grain
+    // specks, dug layers keep the dirt pebbles + soil-curve. Same density
+    // band, same alpha family, same size scale — only the MOTIF is native
+    // to its surface.
+    if(!depth&&!sandSurf){
+      // GRASS — 1-3 blade tufts, each three short strokes fanning from a base
+      const nT=1+Math.floor(h*3);
+      for(let i=0;i<nT;i++){
+        const hh=_hash2(x*31+i*7,y*37+i*5);
+        // v58 — .84 let blade tips cross 1.01T into the east neighbor
+        const bx2=px+T*(.08+hh*.80),by2=py+T*(.10+((hh*7)%1)*.80);
+        const head=((hh*17)%1)*Math.PI*2;
+        const len=T*(.055+((hh*13)%1)*.035);
+        ctx.globalAlpha=.26+((hh*11)%1)*.16;
+        ctx.strokeStyle=terrCol(LD);
+        ctx.lineWidth=T*.028;ctx.lineCap='round';
+        for(let b=0;b<3;b++){
+          const ba=head+(b-1)*.85;
+          ctx.beginPath();ctx.moveTo(bx2,by2);
+          ctx.quadraticCurveTo(bx2+Math.cos(ba)*len*.5,by2+Math.sin(ba)*len*.5,
+                               bx2+Math.cos(ba)*len,by2+Math.sin(ba)*len);
+          ctx.stroke();
+        }
+      }
+    }else if(sandSurf){
+      // SAND — 1-2 wind ripples (gentle wavy strokes) + 1-2 grain specks
+      const nR=1+Math.floor(h*1.999);
+      ctx.strokeStyle=terrCol(LD);
+      ctx.lineWidth=T*.026;ctx.lineCap='round';
+      for(let i=0;i<nR;i++){
+        const hh=_hash2(x*31+i*7,y*37+i*5);
+        const ry=py+T*(.22+((hh*7)%1)*.5+i*.17);
+        const rw=T*(.42+((hh*13)%1)*.3);
+        // v58 — a ripple must stay inside ITS tile: anchor+width used to
+        // reach px+1.20T, dragging wind ripples 0.2T into the eastern
+        // neighbor (tan strokes on grass/water at every sand corner).
+        // rw<=.72T so the slid anchor never passes px+.25T.
+        let rx=px+T*(.12+((hh*11)%1)*.36);
+        if(rx+rw>px+T*.97)rx=px+T*.97-rw;
+        ctx.globalAlpha=.13+((hh*5)%1)*.06;
+        ctx.beginPath();ctx.moveTo(rx,ry);
+        ctx.quadraticCurveTo(rx+rw*.5,ry+T*(hh<.5?.05:-.05),rx+rw,ry);
+        ctx.stroke();
+      }
+      const nG=1+Math.floor(h2*1.999);
+      for(let i=0;i<nG;i++){
+        const hh=_hash2(x*37+i*5,y*41+i*3);
+        const gx=px+T*(.08+hh*.84),gy=py+T*(.08+((hh*7)%1)*.84);
+        ctx.globalAlpha=.22+((hh*11)%1)*.16;
+        ctx.fillStyle=terrCol(LD);
+        ctx.beginPath();ctx.ellipse(gx,gy,T*.024,T*.019,0,0,7);ctx.fill();
+      }
+    }else{
       const nP=1+Math.floor(h*3);
       for(let i=0;i<nP;i++){
         const hh=_hash2(x*31+i*7,y*37+i*5);
@@ -9277,7 +9361,7 @@ function drawTerrainDetail(ctx,bx0,by0,bx1,by1){
 // Uses a deterministic hash per tile so deco is stable across frames.
 // Flowers and grass blades are drawn in a 3/4 topdown perspective —
 // small clumps of blades leaning slightly, with tiny flower dots.
-function drawGrassDeco(ctx,bx0,by0,bx1,by1){
+function drawGrassDeco(ctx,bx0,by0,bx1,by1,time){
   const flowerCols=['#f0e040','#e06080','#a040e0','#f0a040','#e0e0e0'];
   for(let y=by0;y<by1;y++)for(let x=bx0;x<bx1;x++){
     if(ttOf(x,y)!=='grass')continue;
@@ -9293,6 +9377,13 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1){
         const hx=_hash2(x*11+i*19,y*11+i*23);
         const dx=px+T*(.12+hx*.76);
         const dy=py+T*(.12+hh*.76);
+        // v52 — gentle sway: each plant leans +-5 deg and drifts +-1.6% of a
+        // tile with a hashed phase, so the meadow ripples in a light wind
+        // instead of marching in step (or sitting dead).
+        const sw=Math.sin((time||0)*1.6+(hh*.9+hx*.7)*6.28);
+        ctx.save();
+        ctx.translate(sw*T*.016,sw*T*.008);
+        ctx.translate(dx,dy);ctx.rotate(sw*.09);ctx.translate(-dx,-dy);
         if(hh<0.32){
           // flower — 3/4 topdown view: green base + colored petals (enlarged)
           const col=flowerCols[Math.floor(hx*flowerCols.length)];
@@ -9327,6 +9418,7 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1){
             ctx.stroke();
           }
         }
+        ctx.restore();
       }
     }
   }
@@ -9339,7 +9431,7 @@ function drawGrassDeco(ctx,bx0,by0,bx1,by1){
 // never a tile fill. Same family as drawGrassDeco (deterministic _hash2,
 // sparse, flat shapes); colors all reused (seller-green body, rib dark,
 // deco-pink bloom) + the machine-family contact shadow.
-function drawSandDeco(ctx,bx0,by0,bx1,by1){
+function drawSandDeco(ctx,bx0,by0,bx1,by1,time){
   for(let y=by0;y<by1;y++)for(let x=bx0;x<bx1;x++){
     // fast path: the cached isSandAt rejects most visible tiles (one numeric
     // Map.get); only sand candidates pay the dug-tile check (ttOf's sand rule
@@ -9350,48 +9442,135 @@ function drawSandDeco(ctx,bx0,by0,bx1,by1){
     // v46 — the cactus is a PLANT-layer tile (user): a machine occupying the
     // tile destroys the plant, exactly like digging destroys the sand layer.
     if(sc&&sc.m)continue;
+    // v51 — QUARTZ OUTCROP: a flat crystal cluster on the sand — drills here
+    // extract quartz. Same layer rules as the cactus (v47 ore-chunk language:
+    // item-color body, dark border, white highlight; contact shadow).
+    if(quartzOutAt(x,y)){
+      const qh=_hash2(x*11+5,y*11+3);
+      const ox=x*T+T/2+((((qh*7)%1)-.5)*T*.1);
+      const oy=y*T+T/2+((((qh*9)%1)-.5)*T*.1);
+      ctx.fillStyle='rgba(60,50,32,.22)';
+      ctx.beginPath();ctx.ellipse(ox+T*.03,oy+T*.045,T*.21,T*.155,0,0,7);ctx.fill();
+      const prism=(vx,vy,r,rot)=>{
+        ctx.fillStyle='#b3e3ec';ctx.strokeStyle='#6d98a8';ctx.lineWidth=Math.max(1,r*.22);
+        ctx.beginPath();
+        for(let i=0;i<6;i++){const a=rot+i/6*Math.PI*2;i?ctx.lineTo(vx+Math.cos(a)*r,vy+Math.sin(a)*r):ctx.moveTo(vx+Math.cos(a)*r,vy+Math.sin(a)*r)}
+        ctx.closePath();ctx.fill();ctx.stroke();
+        ctx.globalAlpha=.5;ctx.fillStyle='#fff';
+        ctx.beginPath();ctx.moveTo(vx,vy);
+        ctx.lineTo(vx+Math.cos(rot)*r*.82,vy+Math.sin(rot)*r*.82);
+        ctx.lineTo(vx+Math.cos(rot+1.05)*r*.82,vy+Math.sin(rot+1.05)*r*.82);
+        ctx.closePath();ctx.fill();ctx.globalAlpha=1;
+      };
+      prism(ox-T*.085,oy+T*.05,T*.095,qh*6.28);
+      prism(ox+T*.075,oy-T*.02,T*.125,qh*6.28+2.1);
+      prism(ox-T*.01,oy-T*.1,T*.07,qh*6.28+4.2);
+      continue;   // outcrop tiles never also grow a cactus (quartzOutAt excludes it)
+    }
     if(!cactusAt(x,y))continue;      // sparse — dune fields stay calm, each cactus reads alone
     const h2=_hash2(x*13+1,y*13+7);
-    // plant center — tiny jitter; extent stays inside the 0.75T circle
-    const cx0=x*T+T/2+((((h2*11)%1)-.5)*T*.07);
-    const cy0=y*T+T/2+((((h2*13)%1)-.5)*T*.07);
-    const tr=T*(.155+((h2*7)%1)*.03);         // trunk radius .155-.185T
-    const nA=Math.floor(h2*2.999);            // 0-2 arms (v41 gate)
-    // contact shadow — soft ellipse under the plant (machine-shadow family)
-    ctx.fillStyle='rgba(60,50,32,.22)';
-    ctx.beginPath();ctx.ellipse(cx0+T*.035,cy0+T*.05,T*.235,T*.175,0,0,7);ctx.fill();
-    // arms first (under the trunk edge): pad + short neck, spread symmetric
-    for(let a=0;a<nA;a++){
-      const ah=_hash2(x*29+a*7,y*31+a*13);
-      const base=((h2*17)%1)*Math.PI*2;       // deterministic plant heading
-      const sgn=a?-1:1;
-      const ang=base+sgn*(.9+ah*.5);
-      const dist=T*(.175+ah*.045);
-      const ar=T*(.068+ah*.028);
-      const axp=cx0+Math.cos(ang)*dist,ayp=cy0+Math.sin(ang)*dist;
-      ctx.strokeStyle='#58b368';ctx.lineWidth=T*.06;ctx.lineCap='round';
-      ctx.beginPath();ctx.moveTo(cx0,cy0);ctx.lineTo(axp,ayp);ctx.stroke();
+    // v51 — CHUNKY CACTUS (user: "a rare chunky cactus, like a normal cactus
+    // but chunky"): ~15% of cacti (about 1.6% of sand tiles) grow FAT — half
+    // again as wide, always armed with 2-3 arms, 8 ribs, a bloom cluster on
+    // the crown. Same palette, same top-down language — just considerably
+    // more cactus per cactus.
+    const chunky=_hash2(x*41+17,y*43+23)<=0.15;
+    // plant center — tiny jitter; normal cacti stay inside the 0.75T circle,
+    // the chunky landmark sits nearly dead-center (it fills the tile)
+    const cx0=x*T+T/2+((((h2*11)%1)-.5)*T*(chunky?.028:.07));
+    const cy0=y*T+T/2+((((h2*13)%1)-.5)*T*(chunky?.028:.07));
+    // v52 — barely-there breathing (+-1%): cacti are stiff plants, but a
+    // wholly frozen desert reads dead next to the swaying meadow.
+    const brC=1+Math.sin((time||0)*1.2+h2*6.28)*.015;
+    ctx.save();ctx.translate(cx0,cy0);ctx.scale(brC,brC);ctx.translate(-cx0,-cy0);
+    if(chunky){
+      // v53 — CHUNKY CACTUS v2 (user: "the chunky cactus should be the size
+      // and shape of an extender"). The rare desert landmark now wears the
+      // machine family's exact footprint: the extender's own bld() body — a
+      // rounded square ~61% of the tile on a soft offset shadow, top-light
+      // strip, bottom shade — grown in cactus green. Radial ribs clipped to
+      // the body keep the saguaro read, two pad arms neck off the sides
+      // (echoing the extender's socket port), and a bloom cluster crowns
+      // the big boi. Same palette, same top-down language — just a
+      // considerably bigger brick of cactus.
+      bld(ctx,cx0-T*.40,cy0-T*.40,T*.80,'#58b368');
+      // ribs — radial strokes from the crown, clipped to the rounded body
+      ctx.save();
+      rr(ctx,cx0-T*.304,cy0-T*.304,T*.608,T*.608,T*.176);
+      ctx.clip();
+      ctx.strokeStyle='#3f6e2a';ctx.lineWidth=T*.02;ctx.globalAlpha=.55;
+      const rb=6+Math.floor(h2*2.999);
+      for(let i=0;i<rb;i++){
+        const ang=i/rb*Math.PI*2+((h2*19)%1);
+        ctx.beginPath();
+        ctx.moveTo(cx0+Math.cos(ang)*T*.05,cy0+Math.sin(ang)*T*.05);
+        ctx.lineTo(cx0+Math.cos(ang)*T*.42,cy0+Math.sin(ang)*T*.42);
+        ctx.stroke();
+      }
+      ctx.restore();ctx.globalAlpha=1;
+      // pad arms — two, set asymmetrically, hugging the body edge as shallow
+      // bumps (protruding ~.05T past the body — the extender's socket stub)
+      for(let a=0;a<2;a++){
+        const ah=_hash2(x*29+a*7,y*31+a*13);
+        const ang=((h2*17)%1)*Math.PI*2+a*Math.PI*(1.15+ah*.35);
+        const dist=T*.27,ar=T*(.072+ah*.014);
+        const axp=cx0+Math.cos(ang)*dist,ayp=cy0+Math.sin(ang)*dist;
+        ctx.strokeStyle='#58b368';ctx.lineWidth=T*.07;ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(cx0+Math.cos(ang)*T*.2,cy0+Math.sin(ang)*T*.2);ctx.lineTo(axp,ayp);ctx.stroke();
+        ctx.fillStyle='#58b368';
+        ctx.beginPath();ctx.arc(axp,ayp,ar,0,7);ctx.fill();
+        ctx.strokeStyle='#3f6e2a';ctx.globalAlpha=.45;ctx.lineWidth=T*.014;
+        ctx.beginPath();ctx.arc(axp,ayp,ar*.6,0,7);ctx.stroke();
+        ctx.globalAlpha=1;
+      }
+      // bloom — three-crown cluster at the heart of the landmark
+      if(h2>.6){
+        ctx.fillStyle='#e06080';
+        for(let b=0;b<3;b++){
+          const bh=_hash2(x*53+b*3,y*59+b*7);
+          ctx.beginPath();ctx.arc(cx0+(bh-.5)*T*.16,cy0+(((bh*3)%1)-.5)*T*.16,T*.033,0,7);ctx.fill();
+        }
+      }
+    }else{
+      const tr=T*(.155+((h2*7)%1)*.03);
+      const nA=Math.floor(h2*2.999);
+      // contact shadow — soft ellipse under the plant (machine-shadow family)
+      ctx.fillStyle='rgba(60,50,32,.22)';
+      ctx.beginPath();ctx.ellipse(cx0+T*.035,cy0+T*.05,T*.235,T*.175,0,0,7);ctx.fill();
+      // arms first (under the trunk edge): pad + short neck, spread symmetric
+      for(let a=0;a<nA;a++){
+        const ah=_hash2(x*29+a*7,y*31+a*13);
+        const base=((h2*17)%1)*Math.PI*2;       // deterministic plant heading
+        const sgn=a?-1:1;
+        const ang=base+sgn*(.9+ah*.5);
+        const dist=T*(.175+ah*.045);
+        const ar=T*(.068+ah*.028);
+        const axp=cx0+Math.cos(ang)*dist,ayp=cy0+Math.sin(ang)*dist;
+        ctx.strokeStyle='#58b368';ctx.lineWidth=T*.06;ctx.lineCap='round';
+        ctx.beginPath();ctx.moveTo(cx0,cy0);ctx.lineTo(axp,ayp);ctx.stroke();
+        ctx.fillStyle='#58b368';
+        ctx.beginPath();ctx.arc(axp,ayp,ar,0,7);ctx.fill();
+      }
+      // trunk — round cross-section (the top-down read)
       ctx.fillStyle='#58b368';
-      ctx.beginPath();ctx.arc(axp,ayp,ar,0,7);ctx.fill();
+      ctx.beginPath();ctx.arc(cx0,cy0,tr,0,7);ctx.fill();
+      // ribs — radial strokes out from the center (cactus identity from above)
+      ctx.strokeStyle='#3f6e2a';ctx.lineWidth=T*.02;ctx.globalAlpha=.55;
+      for(let i=0;i<6;i++){
+        const ang=i/6*Math.PI*2+((h2*19)%1);
+        ctx.beginPath();
+        ctx.moveTo(cx0+Math.cos(ang)*tr*.3,cy0+Math.sin(ang)*tr*.3);
+        ctx.lineTo(cx0+Math.cos(ang)*tr*.9,cy0+Math.sin(ang)*tr*.9);
+        ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+      // bloom — occasional pink flower at the crown center
+      if(h2>.74){
+        ctx.fillStyle='#e06080';
+        ctx.beginPath();ctx.arc(cx0,cy0,T*.034,0,7);ctx.fill();
+      }
     }
-    // trunk — round cross-section (the top-down read)
-    ctx.fillStyle='#58b368';
-    ctx.beginPath();ctx.arc(cx0,cy0,tr,0,7);ctx.fill();
-    // ribs — radial strokes out from the center (cactus identity from above)
-    ctx.strokeStyle='#3f6e2a';ctx.lineWidth=T*.02;ctx.globalAlpha=.55;
-    for(let i=0;i<6;i++){
-      const ang=i/6*Math.PI*2+((h2*19)%1);
-      ctx.beginPath();
-      ctx.moveTo(cx0+Math.cos(ang)*tr*.3,cy0+Math.sin(ang)*tr*.3);
-      ctx.lineTo(cx0+Math.cos(ang)*tr*.9,cy0+Math.sin(ang)*tr*.9);
-      ctx.stroke();
-    }
-    ctx.globalAlpha=1;
-    // bloom — occasional pink flower at the crown center
-    if(h2>.74){
-      ctx.fillStyle='#e06080';
-      ctx.beginPath();ctx.arc(cx0,cy0,T*.034,0,7);ctx.fill();
-    }
+    ctx.restore();
   }
 }
 // Ambient drifting motes — atmospheric dust/pollen specks that drift across
@@ -9460,25 +9639,25 @@ function render(time){
   // ---- grass decorations (flowers, grass blades) on grass tiles ----
   drawGrassDeco(ctx,tx0,ty0,tx1,ty1,time);
   // ---- v41: cacti — the plant layer over sand (deserts & beaches) ----
-  drawSandDeco(ctx,tx0,ty0,tx1,ty1);
+  drawSandDeco(ctx,tx0,ty0,tx1,ty1,time);
   // ---- ambient drifting motes (atmospheric dust/pollen) ----
   // Slowly drifting translucent specks across the visible area — adds life
   // to the scene without distracting from gameplay. Rendered under machines
   // and items so they never obscure action.
   drawAmbientMotes(ctx,time,tx0,ty0,tx1,ty1);
   drawVeins(time);
-  // === WINDMILL PASS — drawn BEFORE roads/items/machines so the windmill sits
+  // === OUTRIGGER PASS — drawn BEFORE roads/items/machines so the legs sit
   // visually UNDER belts, bridges, items, and the excavator body itself. The
-  // windmill occupies the excavator's 3×3 or 5×5 footprint (based on bore radius).
-  // Only shown when the excavator is ACTIVELY MINING (state='running') AND in
-  // 3×3 or 5×5 bore mode (rad>0). Idle or 1×1 excavators don't get a windmill.
+  // four legs brace the excavator's 3×3 or 5×5 bore footprint. Shown whenever
+  // the bore radius is active (rad>0): folded to a resting reach when idle,
+  // deployed to the bore corners while mining (v56).
   for(let y=0;y<G.N;y++)for(let x=0;x<G.N;x++){
     const m=G.grid[y][x].m;
     if(m && m.type==='excavator'){
       const active=m.state==='running';
       const radMax=G.mods.excavatorRadiusMax||0;
       const rad=Math.min(m.radius??0, radMax);
-      if(active && rad>0)drawExcavatorWindmill(ctx,x,y,T,time,active,rad);
+      if(rad>0)drawExcavatorOutriggers(ctx,x,y,T,time,active,rad,m._legExt===undefined?.55:m._legExt);
     }
   }
   if(G._offGrid&&G._offGrid.size){
@@ -9488,7 +9667,7 @@ function render(time){
       const active=m.state==='running';
       const radMax=G.mods.excavatorRadiusMax||0;
       const rad=Math.min(m.radius??0, radMax);
-      if(active && rad>0)drawExcavatorWindmill(ctx,x,y,T,time,active,rad);
+      if(rad>0)drawExcavatorOutriggers(ctx,x,y,T,time,active,rad,m._legExt===undefined?.55:m._legExt);
     }
   }
   // (off-grid machines sit directly on grass — no dark overlay needed)
@@ -9510,10 +9689,9 @@ function render(time){
       }
     }
   }
-  // === EXTENDER PASS — drawn after machines so the extender body and its
-  // connector cable sit on top of the host's tile edge. The extender is a
-  // distinct dark-slate I/O module; the host-colored connector cable reaches
-  // from the extender body across the tile boundary to "plug into" the host.
+  // === EXTENDER PASS — drawn after machines so the arm's shoulder rides on
+  // top of the host's tile edge. The extender is its host machine's ARM:
+  // host-colored boom + socket head, one piece with the machine it feeds.
   for(let y=0;y<G.N;y++)for(let x=0;x<G.N;x++){
     const m=G.grid[y][x].m;
     if(m&&m.type==='extender')drawMachine(ctx,x,y,x*T,y*T,T,m,time,G.grid[y][x]);
@@ -9591,7 +9769,7 @@ function render(time){
       ctx.globalAlpha=.55;
       const ghostDir=(G.tool==='bridge'||G.tool==='splitter')&&cell.m&&cell.m.type==='belt'?cell.m.dir:useDir;
       const ghost={type:G.tool,dir:ghostDir,level:1,timer:0,spin:time*2,state:'idle',hold:null,
-        rr:0,buf:{},inQ:[],outQ:[],recipe:null,pop:0,w:fp.w,h:fp.h,ax:x,ay:y,ore:cell.terr!=='floor'?ORE_OF[cell.terr]:((cell.depth||0)<2&&isSandAt(x,y)?'sand':null)};
+        rr:0,buf:{},inQ:[],outQ:[],recipe:null,pop:0,w:fp.w,h:fp.h,ax:x,ay:y,ore:cell.terr!=='floor'?ORE_OF[cell.terr]:((cell.depth||0)<2&&isSandAt(x,y)?(quartzOutAt(x,y)?'quartz':'sand'):null)};
       if(G.tool==='belt'||G.tool==='splitter'||G.tool==='bridge'||G.tool==='filter')ghostRoad(ctx,x,y,ghost,time);
       else drawMachine(ctx,x,y,x*T,y*T,T,ghost,time,cell);
       ctx.globalAlpha=1;
@@ -9804,7 +9982,7 @@ function place(x,y,dir,quiet){
     // generic 'stone' item so the drill isn't a dead placement.
     // v38 — on an undug sand riverbank → mine 'sand' (before the stone fallback).
     m.ore = cell.terr!=='floor' ? ORE_OF[cell.terr]
-          : ((cell.depth||0)<2&&isSandAt(x,y) ? 'sand' : 'stone');
+          : ((cell.depth||0)<2&&isSandAt(x,y) ? (quartzOutAt(x,y)?'quartz':'sand') : 'stone');
   }
   // BRIDGE rework: the bridge is "a belt on top of a belt".
   // The bridge keeps its OWN direction (player-chosen via useDir);
@@ -9994,10 +10172,17 @@ canvas.addEventListener('pointerdown',e=>{
   G.drag={tool:G.tool,origin:p,startPx:canvasPx(e),last:p,dir:G.dir,
           painted:new Set(),moved:false,
           // 'paint' = belts/splitters trail; 'orient' = single building rotates by drag; 'tap' = open/scrap ; 'del' = scrap
-          mode: isTapMode ? 'tap' : (G.tool==='del' ? 'del' : ((G.tool==='belt'||G.tool==='bridge'||G.tool==='splitter'||G.tool==='filter')?'paint':'orient'))};
+          mode: isTapMode ? 'tap' : (G.tool==='del' ? 'del' : ((G.tool==='belt'||G.tool==='bridge'||G.tool==='splitter'||G.tool==='filter')?'paint':'orient')),
+          id:(G._dragSeq=(G._dragSeq||0)+1)};   // v50 — unique drag session id
   if(G.drag.mode==='paint'){
     // place the first belt immediately at origin (dir updated as we move)
-    if(place(p.x,p.y,G.dir,true)){G.drag.painted.add(p.x+','+p.y)}
+    if(place(p.x,p.y,G.dir,true)){
+      G.drag.painted.add(p.x+','+p.y);
+      // v50 — mark everything painted THIS drag: belts stay not-live until
+      // the drag ends (items froze/jammed when the drag re-oriented belts
+      // under them mid-flow — user had to replace the belt every time).
+      const fc=cellAt(p.x,p.y);if(fc&&fc.m)fc.m._fresh=G.drag.id;
+    }
   }else if(G.drag.mode==='del'){
     if(cell&&(cell.m||cell.ref)){scrap(p.x,p.y);G.drag.moved=true}
   }
@@ -10049,11 +10234,13 @@ canvas.addEventListener('pointermove',e=>{
     if(stepDir){
       // re-orient the previously painted belt to point along the path
       const prev=cellAt(d.last.x,d.last.y);
-      if(prev&&prev.m&&(prev.m.type==='belt'||prev.m.type==='bridge'||prev.m.type==='splitter'||prev.m.type==='filter')&&d.painted.has(d.last.x+','+d.last.y))prev.m.dir=stepDir;
+      if(prev&&prev.m&&(prev.m.type==='belt'||prev.m.type==='bridge'||prev.m.type==='splitter'||prev.m.type==='filter')&&d.painted.has(d.last.x+','+d.last.y)){prev.m.dir=stepDir;prev.m._fresh=d.id}   // v50 — stays frozen with the drag
       setDir(stepDir);
       // place a belt on the newly entered cell
       const key=p.x+','+p.y;
-      if(!d.painted.has(key)){if(place(p.x,p.y,stepDir,true))d.painted.add(key)}
+      if(!d.painted.has(key)){
+        if(place(p.x,p.y,stepDir,true)){d.painted.add(key);const fc=cellAt(p.x,p.y);if(fc&&fc.m)fc.m._fresh=d.id}
+      }
       d.last={x:p.x,y:p.y};
     }
   }else if(d.mode==='del'){
@@ -11561,15 +11748,21 @@ function _refreshUpImpl(){
   document.getElementById('upName').textContent=TOOLS[m.type].name;
   const pips=document.getElementById('upPips');pips.innerHTML='';
   const canUp=!!UP[m.type];
-  if(canUp)for(let i=0;i<MAX_LVL;i++){
+  // v56 — extenders have no MK tiers that do anything: no pips, no MK badge
+  const pipOk=canUp&&!isExtender(m);
+  if(pipOk)for(let i=0;i<MAX_LVL;i++){
     const d=document.createElement('div');d.className='pip'+(i<m.level?' f':'');pips.appendChild(d)}
-  pips.style.display=canUp?'flex':'none';
+  pips.style.display=pipOk?'flex':'none';
   // v49 — BUILDER BOX MENU (user: "when you click on the box, for the menu
   // all you can see is the resources required to upgrade the machine"):
   // while boxed, hide the tab strip and every section except the ingredient
   // list. The stats pane is forced active so the list IS the panel.
   const boxed=!!m.construction;
-  document.querySelectorAll('.up-tab').forEach(t=>t.style.display=boxed?'none':'');
+  // v56 — the extender panel is stats-only (user: "there is a speed and
+  // mining and upgrade tab for a thing that doesn't do any of those").
+  // A solo panel shows no tab strip at all, and no Speed row.
+  const extOnly=isExtender(m);
+  document.querySelectorAll('.up-tab').forEach(t=>t.style.display=(boxed||extOnly)?'none':'');
   if(boxed){
     pips.style.display='none';
     document.querySelectorAll('.up-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane==='stats'));
@@ -11582,7 +11775,7 @@ function _refreshUpImpl(){
     const _rsx=document.getElementById('radiusSec');if(_rsx)_rsx.style.display='none';
     const _fsx=document.getElementById('filterSec');if(_fsx)_fsx.style.display='none';
   }else{
-    document.getElementById('upSpeed').closest('.st').style.display='';
+    document.getElementById('upSpeed').closest('.st').style.display=extOnly?'none':'';
     document.getElementById('upActionsStats').style.display='flex';
   }
   if(m.type==='excavator'){
@@ -11676,7 +11869,7 @@ function _refreshUpImpl(){
     if(host&&host.m&&host.m.construction){
       // v49 — ingredient interface readout
       exLab.textContent='Feeds';
-      ex.textContent=m.feedItem?(ITEMS[m.feedItem].name+' into the Builder box'):'nothing — pick an ingredient';
+      ex.textContent=m.feedItem?(ITEMS[m.feedItem].name+' into the Builder box'):'nothing — pick below';
     }else{
       exLab.textContent='Extends';
       if(host&&host.m){
@@ -11704,23 +11897,29 @@ function _refreshUpImpl(){
       const hdr=document.createElement('div');
       hdr.style.cssText='display:flex;align-items:center;gap:6px;margin:2px 0 6px';
       hdr.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">CONSTRUCTING</span>'+
-        '<span style="font-size:11px;font-weight:700">'+TOOLS[c.to].name.toUpperCase()+'</span>'+
-        '<span style="font-size:9px;color:var(--muted);margin-left:auto">'+exts.length+'/'+ings.length+' inputs wired</span>';
+        '<span style="font-size:11px;font-weight:700">'+TOOLS[c.to].name.toUpperCase()+'</span>';
       conSec.appendChild(hdr);
+      // v56 — de-cluttered (user: "the builder UI is way too cluttered"):
+      // one row per ingredient — icon, name, count, bar. Wired rows wear a
+      // copper ring on the icon; unwired rows are greyed. No repeated text.
       for(let i=0;i<ings.length;i++){
         const k=ings[i],needN=c.need[k],gotN=Math.min(c.got[k]||0,needN);
-        const extIdx=exts.findIndex(e=>e.feedItem===k);
+        const wired=exts.some(e=>e.feedItem===k);
         const row=document.createElement('div');
         row.style.cssText='display:flex;align-items:center;gap:6px;margin:3px 0';
         const cv=document.createElement('canvas');cv.width=cv.height=30;
-        cv.getContext('2d').drawImage(itemSpr[k],0,0,30,30);
+        const cg=cv.getContext('2d');
+        cg.drawImage(itemSpr[k],0,0,30,30);
+        if(wired){
+          cg.strokeStyle='#d9824a';cg.lineWidth=2.5;
+          cg.beginPath();cg.arc(15,15,12.5,0,7);cg.stroke();
+        }else{
+          cv.style.filter='grayscale(1)';cv.style.opacity=.55;
+        }
         row.appendChild(cv);
         const lab=document.createElement('div');
-        lab.style.cssText='flex:1;font-size:10.5px;color:'+(extIdx>=0?'inherit':'var(--muted)');
-        lab.innerHTML=ITEMS[k].name+' <b>'+gotN+'/'+needN+'</b>'+
-          (extIdx>=0
-            ?' <span style="color:#d9824a;font-size:9px">· EXT '+(extIdx+1)+' feeds this</span>'
-            :' <span style="color:#e85d4a;font-size:9px">· needs an Extender</span>');
+        lab.style.cssText='flex:1;font-size:10.5px;color:'+(wired?'inherit':'var(--muted)');
+        lab.innerHTML=ITEMS[k].name+' <b>'+gotN+'/'+needN+'</b>';
         row.appendChild(lab);
         const bar=document.createElement('div');
         bar.style.cssText='width:64px;height:7px;border-radius:4px;background:rgba(0,0,0,.10);overflow:hidden;flex:none';
@@ -11733,7 +11932,7 @@ function _refreshUpImpl(){
       foot.style.cssText='display:flex;align-items:center;gap:8px;margin-top:6px';
       const hintEl2=document.createElement('div');
       hintEl2.style.cssText='flex:1;font-size:9.5px;color:var(--muted);line-height:1.45';
-      hintEl2.innerHTML='Items enter ONLY through <b>Extenders</b>: point one at the box, open it, and pick the ingredient it feeds (one ingredient each).';
+      hintEl2.innerHTML='greyed = still needs an <b>Extender</b>';
       foot.appendChild(hintEl2);
       const cancel=document.createElement('button');
       cancel.className='ub danger';
@@ -11753,8 +11952,9 @@ function _refreshUpImpl(){
         const ings=Object.keys(cc.need);
         const hdr=document.createElement('div');
         hdr.style.cssText='display:flex;align-items:center;gap:6px;margin:2px 0 6px';
-        hdr.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">INGREDIENT INTERFACE</span>'+
-          '<span style="font-size:9px;color:var(--muted);margin-left:auto">'+TOOLS[cc.to].name.toUpperCase()+' BOX</span>';
+        // v56 — plainer header (was "INGREDIENT INTERFACE" — read as jargon)
+        hdr.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">PICK ONE INGREDIENT</span>'+
+          '<span style="font-size:9px;color:var(--muted);margin-left:auto">FEEDS THE '+TOOLS[cc.to].name.toUpperCase()+' BOX</span>';
         conSec.appendChild(hdr);
         const grid=document.createElement('div');
         grid.style.cssText='display:grid;grid-template-columns:repeat(2,1fr);gap:5px';
@@ -11773,41 +11973,29 @@ function _refreshUpImpl(){
           grid.appendChild(b);
         }
         conSec.appendChild(grid);
-        const hintEl3=document.createElement('div');
-        hintEl3.style.cssText='font-size:9.5px;color:var(--muted);line-height:1.45;margin-top:6px';
-        hintEl3.innerHTML='Feeding <b>'+(m.feedItem?ITEMS[m.feedItem].name:'nothing yet')+'</b>. Belts deliver here — click a button to switch (click again to unassign).';
-        conSec.appendChild(hintEl3);
       }else conSec.style.display='none';
     }else if(upgOf(m)){
+      // v56 — no DROP BUILDER button (user: "if you wanted to place a
+      // builder you would have just grabbed it from the toolbar"). The box
+      // is a compact heads-up: what it upgrades to + the build set. A locked
+      // card is clickable and jumps to the research node.
       conSec.style.display='block';
       const u=upgOf(m),unl=upgUnlocked(m);
       const box=document.createElement('div');
-      box.style.cssText='border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin:2px 0 6px;background:#fdf6e8';
+      box.style.cssText='border:1px solid var(--line);border-radius:8px;padding:7px 8px;margin:2px 0 6px;background:#fdf6e8'+(unl?'':';cursor:pointer');
       const ings=Object.keys(u.ingredients).map(k=>u.ingredients[k]+'× '+ITEMS[k].name).join(' · ');
       const head=document.createElement('div');
       head.style.cssText='display:flex;align-items:center;gap:6px';
-      head.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">TIER UPGRADE</span>'+
+      head.innerHTML='<span style="font-size:10px;font-family:var(--disp);font-weight:700;letter-spacing:.06em;color:#d9824a">UPGRADES TO</span>'+
         '<span style="font-size:11px;font-weight:700">'+TOOLS[u.to].name.toUpperCase()+'</span>';
       box.appendChild(head);
       const sub=document.createElement('div');
-      sub.style.cssText='font-size:9.5px;color:var(--muted);margin:3px 0 5px;line-height:1.5';
-      sub.textContent=(TOOLS[u.to].desc||'')+' Build set: '+ings+'. Drag a Builder onto this machine to box it up — or use the button. Ingredients go in through Extenders.';
+      sub.style.cssText='font-size:9.5px;color:var(--muted);margin:3px 0 0;line-height:1.5';
+      sub.innerHTML=unl
+        ?('Build set: '+ings+'. Drop a <b>Builder</b> box on this machine to start.')
+        :('Research <b>'+((TECHS.find(t=>t.id===u.tech)||{name:u.tech}).name)+'</b> first · Build set: '+ings);
       box.appendChild(sub);
-      const btn=document.createElement('button');
-      btn.className='ub main';
-      btn.style.cssText='width:100%;font-size:10.5px;justify-content:center';
-      if(unl){
-        // v49 — placing the Builder starts the upgrade automatically; this
-        // button does the same purchase (box drops, machine gets covered).
-        btn.textContent='DROP BUILDER — $'+fmt(priceOf('builder'));
-        btn.addEventListener('click',()=>{audio();attachBuilder(G.sel.x,G.sel.y);_refreshUpLastTime=0;_refreshUpImpl()});
-      }else{
-        const tn=(TECHS.find(t=>t.id===u.tech)||{name:u.tech}).name;
-        btn.textContent='🔒 RESEARCH '+tn.toUpperCase();
-        btn.style.opacity=.55;
-        btn.addEventListener('click',()=>{audio();focusTech(u.tech)});
-      }
-      box.appendChild(btn);
+      if(!unl)box.addEventListener('click',()=>{audio();focusTech(u.tech)});
       conSec.appendChild(box);
     }else conSec.style.display='none';
   }
@@ -12123,15 +12311,19 @@ function _refreshUpImpl(){
     document.getElementById('upBuy').style.display='none';
     document.getElementById('upRotate').style.display='none';
   }
+  // v56 — the extender is a passive port: MK speed does nothing for it and
+  // hostDir IS its aim (nothing to rotate) — hide both, keep scrap.
+  const extBtn=isExtender(m);
   document.getElementById('upSell').style.display='flex';
   const buy=document.getElementById('upBuy');
-  if(canUp&&m.level<MAX_LVL){buy.style.display='flex';
+  if(extBtn){buy.style.display='none';}
+  else if(canUp&&m.level<MAX_LVL){buy.style.display='flex';
     const c=upCost(m);document.getElementById('upCost').textContent='$'+fmt(c);
     buy.disabled=G.money<c;
   }else if(canUp){buy.style.display='flex';buy.disabled=true;
     document.getElementById('upCost').textContent='MAX';
   }else buy.style.display='none';
-  document.getElementById('upRotate').style.display=(m.type==='seller')?'none':'flex';
+  document.getElementById('upRotate').style.display=(m.type==='seller'||extBtn)?'none':'flex';
   document.getElementById('upRefund').textContent='+$'+fmt(Math.floor(m.invested*(m.type==='excavator'?.8:.5)));
   // === MODULES TAB ===
   // Render module slots and shop. Shows 3+ slots, each can hold a module.
@@ -13938,6 +14130,7 @@ function loadGame(){
     if(d.cam&&typeof d.cam==='object'){G.cam.x=d.cam.x;G.cam.y=d.cam.y;G.cam.zoom=d.cam.zoom}
     if(typeof d.waterSeed==='number')G.waterSeed=d.waterSeed;
     _waterCache.clear();
+    try{_wOver.clear()}catch(e){}          // v58 — overhang bits too
     try{_wFast.clear()}catch(e){}          // v35e — far-zoom water paints are seed-dependent too
     try{_wDens.clear()}catch(e){}          // v36 — smooth-depth densities too
     try{_sandCache.clear()}catch(e){}      // v38 — sand beaches too
@@ -14170,7 +14363,7 @@ if ('serviceWorker' in navigator) {
       demoZoom=true;
       // v10: deterministic river seed — chosen so the river meanders through the
       // mid-west and provably misses every machine/belt/ore/decor tile.
-      G.waterSeed=1.9;try{_waterCache.clear();_wFast.clear();_wDens.clear();_sandCache.clear();_terrainCache.clear()}catch(e){}
+      G.waterSeed=1.9;try{_waterCache.clear();_wOver.clear();_wFast.clear();_wDens.clear();_sandCache.clear();_terrainCache.clear()}catch(e){}
       G.grid=buildGrid();G.N=GN;G.items=[];G.parts=[];G.texts=[];G.rings=[]
       G.time=0;G.money=1000000;G.earned=0;G.hist=[];G.won=false;
       G.hover=null;G.sel=null;G.drag=null;G.tool='drill';G.dir='E';
@@ -14491,11 +14684,15 @@ if ('serviceWorker' in navigator) {
   // Re-evaluate which static tabs should be visible. Dynamic category tabs
   // are always visible (they were only created if they have items).
   function updateVisibility(){
-    const itemsVisible = ITEMS_SECTIONS.some(id => isShown(document.getElementById(id)));
-    const configVisible = isShown(document.getElementById('radiusSec'));
-    // Modules tab: visible for machines that support modules
     const selM = (typeof selMachine === 'function') ? selMachine() : null;
-    const modulesVisible = selM && !['seller','foreman','workshop','extender'].includes(selM.type);
+    // v56 — a boxed machine shows NO tabs at all (the v49 intent: the panel
+    // IS the ingredient list). updateVisibility used to re-show the modules
+    // tab for module-capable machines even while boxed.
+    const boxedM = !!(selM && selM.construction);
+    const itemsVisible = !boxedM && ITEMS_SECTIONS.some(id => isShown(document.getElementById(id)));
+    const configVisible = !boxedM && isShown(document.getElementById('radiusSec'));
+    // Modules tab: visible for machines that support modules
+    const modulesVisible = !boxedM && selM && !['seller','foreman','workshop','extender'].includes(selM.type);
     const itemsTab = panel.querySelector('.up-tab[data-tab="items"]');
     const configTab = panel.querySelector('.up-tab[data-tab="config"]');
     const modulesTab = panel.querySelector('.up-tab[data-tab="modules"]');
@@ -14982,7 +15179,7 @@ body.cine-mode .stage{padding:0 !important}
   .resbtn .resbtn-lbl{display:none}
   .resbtn .resbtn-ico{font-size:14px}
   .gc-btn{width:30px;height:30px;font-size:13px}
-  .hud-dock{left:6px;right:6px;bottom:6px;width:auto;max-width:none;
+  .hud-dock{left:6px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));width:auto;max-width:none;
     padding:6px 7px;gap:6px;justify-content:flex-start}
   .tools{flex:1 1 auto;min-width:0;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
     max-height:none;justify-content:flex-start;gap:4px;
@@ -15018,7 +15215,7 @@ body.cine-mode .stage{padding:0 !important}
   .wallet .w-inc{font-size:8px;max-width:64px}
   .gc-btn{width:26px;height:26px;font-size:12px}
   .resbtn{height:26px;padding:0 7px}
-  .hud-dock{left:4px;right:4px;bottom:4px;padding:4px 6px;gap:4px}
+  .hud-dock{left:4px;right:4px;bottom:calc(4px + env(safe-area-inset-bottom,0px));padding:4px 6px;gap:4px}
   .tool{width:46px;height:52px}
   .tool canvas{width:22px;height:22px}
   .tool .pr{font-size:8px}
@@ -15177,10 +15374,10 @@ body.cine-mode .stage{padding:0 !important}
 
 /* ---------------- phones ---------------- */
 @media (max-width:760px){
-  :root{--safe-bot:calc(var(--dock-h,124px) + 6px)}
+  :root{--safe-bot:calc(var(--dock-h,124px) + 6px + env(safe-area-inset-bottom,0px))}
   .hud-top{top:6px;left:6px;padding:3px 7px}
   .hud-tr{top:6px;right:6px;padding:3px 6px;gap:4px}
-  .hud-dock{left:6px;right:6px;bottom:6px;width:auto;max-width:none;
+  .hud-dock{left:6px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));width:auto;max-width:none;
     padding:4px 5px;gap:4px;border-radius:var(--r-lg)}
   .tabs{gap:0;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}
   .tabs::-webkit-scrollbar{display:none}
@@ -15410,6 +15607,8 @@ body.cine-mode .stage{padding:0 !important}
   align-items:center;justify-content:center}
 .rs-x:hover{color:var(--cream);background:rgba(80,68,44,.08)}
 .res-prog{flex:none;display:flex;align-items:center;gap:8px}
+.res-prog .rp-lab{font-family:var(--disp);font-size:7.5px;font-weight:700;letter-spacing:.14em;
+  color:var(--muted);text-transform:uppercase}
 .res-prog b{font-family:var(--disp);font-size:11px;color:var(--cream)}
 .rp-track{width:88px;height:5px;border-radius:3px;background:#c4b48c;overflow:hidden;display:block}
 .rp-fill{display:block;height:100%;background:var(--copper);border-radius:3px;transition:width .3s}
